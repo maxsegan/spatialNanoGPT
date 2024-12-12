@@ -43,7 +43,7 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
 wandb_log = False # disabled by default
 wandb_project = 'owt'
-wandb_run_name = 'gpt2' # 'run' + str(time.time())
+wandb_run_name = 'gpt2_1e5' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
@@ -193,7 +193,7 @@ if block_size < model.config.block_size:
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
 model.to(device)
 
-spatial_net = SpatialNet(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=1e-4, device=device)
+spatial_net = SpatialNet(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=1e-5, device=device)
 raw_model = spatial_net.model  # This is the underlying GPT model for optimizer
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
@@ -214,7 +214,7 @@ if compile:
 # wrap model into DDP container
 if ddp:
     spatial_net = DDP(spatial_net, device_ids=[ddp_local_rank])
-    raw_model = spatial_net.module.model
+raw_model = spatial_net.module.model if ddp else spatial_net.model
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
@@ -226,7 +226,7 @@ def estimate_loss():
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
-                logits, loss = model(X, Y)
+                logits, loss = raw_model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     spatial_net.train()
@@ -255,7 +255,6 @@ if wandb_log and master_process:
 X, Y = get_batch('train') # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
-raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 while True:
 
