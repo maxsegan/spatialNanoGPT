@@ -125,7 +125,7 @@ class SpatialNet(nn.Module):
             total_cost = torch.stack(costs).sum()
             total_params = sum(param_counts)
         # Apply the scaling factor to the spatial cost
-        if total_params > 0:
+        if total_params > 0 or self.spatial_cost_scale > 0:
             return self.spatial_cost_scale * total_cost / total_params
         else:
             return torch.tensor(0.0).to(self.device)

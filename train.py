@@ -41,9 +41,9 @@ eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
-wandb_log = False # disabled by default
+wandb_log = True # disabled by default
 wandb_project = 'owt'
-wandb_run_name = 'gpt2_1e5' # 'run' + str(time.time())
+wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
@@ -67,6 +67,8 @@ decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+# spatial loss
+spatial_cost_scale = 1e-5
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
@@ -159,7 +161,7 @@ if init_from == 'scratch':
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
+    ckpt_path = os.path.join(out_dir, wandb_run_name + 'ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
@@ -193,7 +195,7 @@ if block_size < model.config.block_size:
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
 model.to(device)
 
-spatial_net = SpatialNet(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=1e-5, device=device)
+spatial_net = SpatialNet(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=spatial_cost_scale, device=device)
 raw_model = spatial_net.model  # This is the underlying GPT model for optimizer
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
@@ -287,7 +289,7 @@ while True:
                     'config': config,
                 }
                 print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                torch.save(checkpoint, os.path.join(out_dir, wandb_run_name + 'ckpt.pt'))
     if iter_num == 0 and eval_only:
         break
 
