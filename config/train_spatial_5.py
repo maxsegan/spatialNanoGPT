@@ -1,10 +1,10 @@
 # config for training GPT-2 (124M) down to very nice loss of ~2.85 on 1 node of 8X A100 40GB
 # launch as the following (e.g. in a screen session) and wait ~5 days:
-# $ torchrun --standalone --nproc_per_node=8 train.py config/train_spatial_100.py
+# $ torchrun --standalone --nproc_per_node=8 train.py config/train_spatial_5.py
 
 wandb_log = True
 wandb_project = 'owt'
-wandb_run_name='gpt2-100'
+wandb_run_name='gpt2-5'
 
 # these make the total batch size be ~0.5M
 # 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
@@ -24,4 +24,4 @@ log_interval = 10
 # weight decay
 weight_decay = 1e-1
 
-spatial_cost_scale = 100
+spatial_cost_scale = 5
