@@ -5,8 +5,8 @@ and also in a larger training run with distributed data parallel (ddp).
 To run on a single GPU, example:
 $ python train.py --batch_size=32 --compile=False
 
-To run with DDP on 8 gpus on 1 node, example:
-$ torchrun --standalone --nproc_per_node=8 train.py
+To run with DDP on 4 gpus on 1 node, example:
+$ torchrun --standalone --nproc_per_node=4 train.py
 
 To run with DDP on 4 gpus across 2 nodes, example:
 - Run on the first (master) node with example IP 123.456.123.456:
@@ -23,6 +23,7 @@ import pickle
 from contextlib import nullcontext
 
 import numpy as np
+from spatial_wrapper import SpatialNet
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
@@ -33,66 +34,52 @@ from model import GPTConfig, GPT
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
 out_dir = 'out'
-eval_interval = 1000
-log_interval = 10
+eval_interval = 2000
+log_interval = 1
 eval_iters = 200
-eval_only = False
-always_save_checkpoint = True
-init_from = 'scratch'
+eval_only = False # if True, script exits right after the first eval
+always_save_checkpoint = True # if True, always save a checkpoint after each eval
+init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
-wandb_log = True
+wandb_log = True # disabled by default
 wandb_project = 'owt'
-wandb_run_name = 'gpt2_l1_1e-9'
+wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'
-gradient_accumulation_steps = 5 * 8
-batch_size = 12
+gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
+batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 # model
 n_layer = 12
 n_head = 12
 n_embd = 768
-dropout = 0.0
-bias = False
-# L1 regularization
-l1_scale = 1e-9
+dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
+bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
-learning_rate = 6e-4
-max_iters = 600000
+learning_rate = 6e-4 # max learning rate
+max_iters = 600000 # total number of training iterations
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
-grad_clip = 1.0
+grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
-decay_lr = True
-warmup_iters = 2000
-lr_decay_iters = 600000
-min_lr = 6e-5
+decay_lr = True # whether to decay the learning rate
+warmup_iters = 2000 # how many steps to warm up for
+lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
+min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+# spatial loss
+spatial_cost_scale = 1e-5
 # DDP settings
-backend = 'nccl'
+backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
-device = 'cuda'
-dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
-compile = True
+device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
+compile = True # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
-
-class L1RegularizedGPT(torch.nn.Module):
-    """Wrapper for GPT model with L1 regularization"""
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-    
-    def forward(self, x, y):
-        logits, loss = self.model(x, y)
-        return logits, loss
-
-    def estimate_mfu(self, *args, **kwargs):
-        """Pass through MFU estimation to underlying model"""
-        return self.model.estimate_mfu(*args, **kwargs)
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -206,20 +193,16 @@ elif init_from.startswith('gpt2'):
 if block_size < model.config.block_size:
     model.crop_block_size(block_size)
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
-
-model = L1RegularizedGPT(model)
 model.to(device)
-model = model.to(dtype=ptdtype)
-raw_model = model.model
-for name, param in model.named_parameters():
-    print(f"{name}: {param.dtype}")
+
+spatial_net = SpatialNet(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=spatial_cost_scale, device=device)
+raw_model = spatial_net.model  # This is the underlying GPT model for optimizer
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
-use_grad_scaling = (dtype == 'float16')  # bfloat16 doesn't need gradient scaling
-scaler = torch.amp.GradScaler('cuda', enabled=use_grad_scaling)
+scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
-optimizer = raw_model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
 checkpoint = None # free up memory
@@ -227,29 +210,28 @@ checkpoint = None # free up memory
 # compile the model
 if compile:
     print("compiling the model... (takes a ~minute)")
-    unoptimized_model = model
-    model = torch.compile(model) # requires PyTorch 2.0
+    unoptimized_model = spatial_net
+    spatial_net = torch.compile(spatial_net) # requires PyTorch 2.0
 
 # wrap model into DDP container
 if ddp:
-    model = DDP(model, device_ids=[ddp_local_rank])
-raw_model = model.module.model if ddp else model.model
+    spatial_net = DDP(spatial_net, device_ids=[ddp_local_rank])
+raw_model = spatial_net.module.model if ddp else spatial_net.model
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
 def estimate_loss():
     out = {}
-    model.eval()
+    spatial_net.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
-                logits, loss = model(X, Y)
-                # Don't include L1 loss
+                logits, loss = raw_model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
-    model.train()
+    spatial_net.train()
     return out
 
 # learning rate decay scheduler (cosine with warmup)
@@ -286,18 +268,14 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
-        # Calculate L1 loss during evaluation
-        l1_loss = sum(torch.sum(torch.abs(p)).item() for p in raw_model.parameters())
-        l1_loss = l1_scale * l1_loss
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, l1_loss {l1_loss:.4f}")
+        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
                 "lr": lr,
-                "mfu": running_mfu*100,  # convert to percentage
-                "train/l1_loss": l1_loss
+                "mfu": running_mfu*100, # convert to percentage
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
@@ -319,21 +297,19 @@ while True:
     # and using the GradScaler if data type is float16
     for micro_step in range(gradient_accumulation_steps):
         if ddp:
-            model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
+            spatial_net.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss = model(X, Y)
-            # Calculate L1 loss here without creating new computation graph
-            l1_loss = l1_scale * sum(p.abs().sum() for p in raw_model.parameters())
-            total_loss = (loss + l1_loss) / gradient_accumulation_steps
+            logits, loss = spatial_net(X, Y)
+            # Scale the entire loss (model + cost) for gradient accumulation
+            cost = spatial_net.module.get_cost() if ddp else spatial_net.get_cost()
+            total_loss = (loss + cost) / gradient_accumulation_steps
 
-        # Backward pass and optimization
         X, Y = get_batch('train')
         scaler.scale(total_loss).backward()
-
     # clip the gradient
     if grad_clip != 0.0:
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        torch.nn.utils.clip_grad_norm_(spatial_net.parameters(), grad_clip)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
     scaler.update()
@@ -345,13 +321,13 @@ while True:
     dt = t1 - t0
     t0 = t1
     if iter_num % log_interval == 0 and master_process:
+        # get loss as float. note: this is a CPU-GPU sync point
+        # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
         lossf = total_loss.item() * gradient_accumulation_steps
-        l1_lossf = l1_loss.item()
-        if local_iter_num >= 5:
+        if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        print(f"iter {iter_num}: loss {lossf:.4f}, l1_loss {l1_lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
-
+        print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
     iter_num += 1
     local_iter_num += 1
 
