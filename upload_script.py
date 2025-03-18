@@ -8,14 +8,7 @@ import shutil
 api = HfApi()
 
 variants = [
-    ("out/gpt2-1e5ckpt.pt", "maxsegan/gpt2-spatial_loss1e-5", 1e-5),
-    ("out/gpt2-1e4ckpt.pt", "maxsegan/gpt2-spatial_loss1e-4", 1e-4),
-    ("out/gpt2-1e3ckpt.pt", "maxsegan/gpt2-spatial_loss1e-3", 1e-3),
-    ("out/gpt2-1e2ckpt.pt", "maxsegan/gpt2-spatial_loss1e-2", 1e-2),
-    ("out/gpt2-1e1ckpt.pt", "maxsegan/gpt2-spatial_loss1e-1", 1e-1),
-    ("out/gpt2-1ckpt.pt",   "maxsegan/gpt2-spatial_loss1",    1.0),
-    ("out/gpt2-10ckpt.pt",  "maxsegan/gpt2-spatial_loss10",   10.0),
-    ("../nanoGPT/out/ckpt.pt", "maxsegan/gpt2-spatial_loss_baseline",  0),
+    ("out/gpt2-spatial_5_100k_1gpuckpt.pt", "maxsegan/gpt2-spatial_loss5_100k", 1),
 ]
 
 for ckpt_file, repo_id, spatial_cost_scale in variants:
@@ -51,7 +44,7 @@ for ckpt_file, repo_id, spatial_cost_scale in variants:
 
     with open(os.path.join(save_dir, "config.json"), "w") as f:
         json.dump(config.__dict__, f)
-    #api.create_repo(repo_id=repo_id, exist_ok=True)
+    api.create_repo(repo_id=repo_id, exist_ok=True)
 
     api.upload_folder(
         folder_path=save_dir,
