@@ -1,5 +1,70 @@
 import torch
 import torch.nn as nn
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
+def alternative_hungarian_optimization(W, C, max_iter=100, tol=1e-6, verbose=False):
+    """
+    Finds row and column permutations for matrix C to minimize mean(W * C_perm),
+    where * is the elementwise product. Returns the new permuted C matrix.
+    
+    Parameters:
+      W: 2D numpy array of shape (m, n) with nonnegative entries.
+      C: 2D numpy array of shape (m, n) with nonnegative entries.
+      max_iter: maximum number of alternating iterations.
+      tol: tolerance for convergence (based on change in objective).
+      verbose: if True, prints progress.
+      
+    Returns:
+      row_perm: permutation of row indices for C (as a numpy array).
+      col_perm: permutation of column indices for C (as a numpy array).
+      obj: final objective value.
+      C_new: the permuted version of C, i.e., C[np.ix_(row_perm, col_perm)].
+    """
+    W=W.detach().cpu().numpy()
+    C=C.detach().cpu().numpy() 
+    m, n = W.shape
+    
+    # Initialize with the identity permutation.
+    row_perm = np.arange(m)
+    col_perm = np.arange(n)
+    
+    def compute_objective(row_perm, col_perm):
+        # Compute mean of elementwise product after applying the permutations.
+        C_perm = C[np.ix_(row_perm, col_perm)]
+        return np.mean(W * C_perm)
+    
+    obj_prev = compute_objective(row_perm, col_perm)
+    if verbose:
+        print("Initial objective: ", obj_prev)
+    
+    for iteration in range(max_iter):
+        # --- Step 1: Optimize row permutation (with fixed col_perm) ---
+        # Vectorized computation of cost for rows:
+        # cost_rows[i, k] = dot(W[i, :], C[k, col_perm])
+        cost_rows = np.dot(W, C[:, col_perm].T)
+        _, new_row_perm = linear_sum_assignment(cost_rows)
+        row_perm = new_row_perm  # new_row_perm gives the row from C assigned to row i in W
+        
+        # --- Step 2: Optimize column permutation (with fixed row_perm) ---
+        # Vectorized computation of cost for columns:
+        # cost_cols[j, l] = dot(W[:, j], C[row_perm, l])
+        cost_cols = np.dot(W.T, C[row_perm, :])
+        _, new_col_perm = linear_sum_assignment(cost_cols)
+        col_perm = new_col_perm
+        
+        # --- Check convergence ---
+        obj_current = compute_objective(row_perm, col_perm)
+        if verbose:
+            print(f"Iteration {iteration+1}: objective = {obj_current}",flush=True)
+        
+        if abs(obj_prev - obj_current) < tol:
+            break
+        obj_prev = obj_current
+        
+    # Create the new permuted version of C.
+    C_new = C[np.ix_(row_perm, col_perm)]
+    return torch.tensor(C_new)
 
 
 def compute_distance_matrix(N, M, A, B, D):
@@ -99,6 +164,29 @@ class SpatialNet(nn.Module):
             else:
                 # Recursively search children
                 self._extract_layers(layer)
+
+    def optimize(self):
+        print("init",self.get_cost(),flush=True)
+        # Compute cost for linear layers
+        new_dist_matrices= []
+        i=0
+        total=len(self.linear_distance_matrices)+len(self.value_distance_matrices),
+        for layer, dist_matrix in zip(self.linear_layers, self.linear_distance_matrices):
+            i+=1
+            #print(i,total,dist_matrix.shape,flush=True)
+            weight_abs = torch.abs(layer.weight)
+            new_dist_matrices.append(alternative_hungarian_optimization(weight_abs, dist_matrix))
+        self.linear_distance_matrices=new_dist_matrices
+        new_dist_matrices= []
+        # Compute cost for value projection layers
+        for value_proj, dist_matrix in zip(self.value_networks, self.value_distance_matrices):
+            i+=1
+            #print(i,total,dist_matrix.shape,flush=True)
+
+            weight_abs = torch.abs(value_proj[0])
+            new_dist_matrices.append(alternative_hungarian_optimization(weight_abs, dist_matrix))
+        self.value_distance_matrices=new_dist_matrices
+        print("final",self.get_cost(),flush=True)
 
     def get_cost(self):
         total_cost = 0.0
