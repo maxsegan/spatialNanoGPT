@@ -23,12 +23,12 @@ import pickle
 from contextlib import nullcontext
 
 import numpy as np
-from spatial_wrapper import SpatialNet
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPTConfig, GPT
+from regularized_gpt import RegularizedGPT
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -67,8 +67,9 @@ decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
-# spatial loss
+# regularization
 spatial_cost_scale = 1e-5
+l1_scale = 0.0
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
@@ -195,8 +196,8 @@ if block_size < model.config.block_size:
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
 model.to(device)
 
-spatial_net = SpatialNet(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=spatial_cost_scale, device=device)
-raw_model = spatial_net.model  # This is the underlying GPT model for optimizer
+regularized_model = RegularizedGPT(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=spatial_cost_scale, l1_scale=l1_scale, device=device)
+raw_model = regularized_model.model  # This is the underlying GPT model for optimizer
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
@@ -210,19 +211,19 @@ checkpoint = None # free up memory
 # compile the model
 if compile:
     print("compiling the model... (takes a ~minute)")
-    unoptimized_model = spatial_net
-    spatial_net = torch.compile(spatial_net) # requires PyTorch 2.0
+    unoptimized_model = regularized_model
+    regularized_model = torch.compile(regularized_model) # requires PyTorch 2.0
 
 # wrap model into DDP container
 if ddp:
-    spatial_net = DDP(spatial_net, device_ids=[ddp_local_rank])
-raw_model = spatial_net.module.model if ddp else spatial_net.model
+    regularized_model = DDP(regularized_model, device_ids=[ddp_local_rank])
+raw_model = regularized_model.module.model if ddp else regularized_model.model
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
 def estimate_loss():
     out = {}
-    spatial_net.eval()
+    regularized_model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
@@ -231,7 +232,7 @@ def estimate_loss():
                 logits, loss = raw_model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
-    spatial_net.train()
+    regularized_model.train()
     return out
 
 # learning rate decay scheduler (cosine with warmup)
@@ -276,6 +277,10 @@ while True:
                 "val/loss": losses['val'],
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
+                "l1_scale": l1_scale,
+                "spatial_cost_scale": spatial_cost_scale,
+                "weight_decay": weight_decay,
+                "regularization_cost": cost.item() if cost is not None else 0.0,
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
@@ -287,6 +292,11 @@ while True:
                     'iter_num': iter_num,
                     'best_val_loss': best_val_loss,
                     'config': config,
+                    'regularization': {
+                        'l1_scale': l1_scale,
+                        'spatial_cost_scale': spatial_cost_scale,
+                        'weight_decay': weight_decay,
+                    },
                 }
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, wandb_run_name + 'ckpt.pt'))
@@ -297,11 +307,11 @@ while True:
     # and using the GradScaler if data type is float16
     for micro_step in range(gradient_accumulation_steps):
         if ddp:
-            spatial_net.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
+            regularized_model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss = spatial_net(X, Y)
+            logits, loss = regularized_model(X, Y)
             # Scale the entire loss (model + cost) for gradient accumulation
-            cost = spatial_net.module.get_cost() if ddp else spatial_net.get_cost()
+            cost = regularized_model.module.get_cost() if ddp else regularized_model.get_cost()
             total_loss = (loss + cost) / gradient_accumulation_steps
 
         X, Y = get_batch('train')
@@ -309,7 +319,7 @@ while True:
     # clip the gradient
     if grad_clip != 0.0:
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(spatial_net.parameters(), grad_clip)
+        torch.nn.utils.clip_grad_norm_(regularized_model.parameters(), grad_clip)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
     scaler.update()
