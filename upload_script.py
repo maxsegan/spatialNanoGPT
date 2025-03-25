@@ -10,7 +10,6 @@ import shutil
 parser = argparse.ArgumentParser(description='Upload trained model to HuggingFace Hub')
 parser.add_argument('--model_path', type=str, required=True, help='Path to the model checkpoint file')
 parser.add_argument('--repo_id', type=str, required=True, help='HuggingFace repository ID (e.g., username/model-name)')
-parser.add_argument('--spatial_cost_scale', type=float, default=1.0, help='Spatial cost scale parameter')
 args = parser.parse_args()
 
 api = HfApi()
@@ -55,7 +54,6 @@ with open(os.path.join(save_dir, "config.json"), "w") as f:
 # Create README.md with basic info
 with open(os.path.join(save_dir, "README.md"), "w") as f:
     f.write(f"# {args.repo_id.split('/')[-1]}\n\n")
-    f.write(f"This model was trained with a spatial cost scale of {args.spatial_cost_scale}.\n\n")
     f.write("## Model Details\n\n")
     f.write(f"- Block size: {model_args['block_size']}\n")
     f.write(f"- Vocabulary size: {model_args['vocab_size']}\n")
