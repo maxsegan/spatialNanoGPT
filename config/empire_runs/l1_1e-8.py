@@ -23,3 +23,7 @@ log_interval = 10
 
 # weight decay
 weight_decay = 1e-1
+
+# regularization
+spatial_cost_scale = 0.0
+l1_scale = 1e-8

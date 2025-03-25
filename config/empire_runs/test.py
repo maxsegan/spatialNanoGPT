@@ -12,9 +12,9 @@ batch_size = 12
 block_size = 1024
 gradient_accumulation_steps = 5 * 8
 
-# this makes total number of tokens be 300B / 6
-max_iters = 100000
-lr_decay_iters = 100000
+# this makes total number of tokens be 300B / 6000 - this is a toy test
+max_iters = 1100
+lr_decay_iters = 1100
 
 # eval stuff
 eval_interval = 1000

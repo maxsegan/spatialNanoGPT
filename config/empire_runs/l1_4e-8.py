@@ -26,4 +26,4 @@ weight_decay = 1e-1
 
 # regularization
 spatial_cost_scale = 0.0
-l1_scale = 0.0
+l1_scale = 4e-8
