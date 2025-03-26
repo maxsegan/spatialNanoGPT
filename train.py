@@ -327,11 +327,6 @@ while True:
     scaler.update()
     # flush the gradients as soon as we can, no need for this memory anymore
     optimizer.zero_grad(set_to_none=True)
-    # Run Hungarian optimization for swappable mode when we step the optimizer
-    if spatial_mode == "swappable":
-        if master_process:
-            print(f"Running Hungarian optimization at step {iter_num}")
-        regularized_model.module.spatial_net.optimize() if ddp else regularized_model.spatial_net.optimize()
 
     # timing and logging
     t1 = time.time()
@@ -345,6 +340,12 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+    if iter_num % log_interval == 0:
+        # Run Hungarian optimization for swappable mode when we eval
+        if spatial_mode == "swappable":
+            if master_process:
+                print(f"Running Hungarian optimization at step {iter_num}")
+            regularized_model.module.spatial_net.optimize() if ddp else regularized_model.spatial_net.optimize()
     iter_num += 1
     local_iter_num += 1
 
