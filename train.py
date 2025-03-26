@@ -68,6 +68,7 @@ warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # regularization
+spatial_mode = "fixed"
 spatial_cost_scale = 1e-5
 l1_scale = 0.0
 # DDP settings
@@ -196,7 +197,7 @@ if block_size < model.config.block_size:
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
 model.to(device)
 
-regularized_model = RegularizedGPT(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=spatial_cost_scale, l1_scale=l1_scale, device=device)
+regularized_model = RegularizedGPT(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=spatial_cost_scale, l1_scale=l1_scale, spatial_mode=spatial_mode, device=device)
 raw_model = regularized_model.model  # This is the underlying GPT model for optimizer
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
@@ -296,6 +297,7 @@ while True:
                         'l1_scale': l1_scale,
                         'spatial_cost_scale': spatial_cost_scale,
                         'weight_decay': weight_decay,
+                        'spatial_mode': spatial_mode,
                     },
                 }
                 print(f"saving checkpoint to {out_dir}")
@@ -325,6 +327,11 @@ while True:
     scaler.update()
     # flush the gradients as soon as we can, no need for this memory anymore
     optimizer.zero_grad(set_to_none=True)
+    # Run Hungarian optimization for swappable mode when we step the optimizer
+    if spatial_mode == "swappable":
+        if master_process:
+            print(f"Running Hungarian optimization at step {iter_num}")
+        regularized_model.module.spatial_net.optimize() if ddp else regularized_model.spatial_net.optimize()
 
     # timing and logging
     t1 = time.time()

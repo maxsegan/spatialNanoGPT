@@ -18,6 +18,7 @@ class RegularizedGPT(nn.Module):
         A=1.0, 
         B=1.0, 
         D=1.0, 
+        spatial_mode="fixed",  # "fixed", "learnable", and in the future "swappable"
         device="cuda"
     ):
         super().__init__()
@@ -27,14 +28,25 @@ class RegularizedGPT(nn.Module):
         
         self.spatial_enabled = spatial_cost_scale > 0
         if self.spatial_enabled:
-            self.spatial_net = SpatialNet(
-                model=model,
-                A=A,
-                B=B,
-                D=D,
-                spatial_cost_scale=spatial_cost_scale,
-                device=device
-            )
+            if spatial_mode == "fixed" or spatial_mode == "swappable":
+                self.spatial_net = SpatialNet(
+                    model=model,
+                    A=A,
+                    B=B,
+                    D=D,
+                    spatial_cost_scale=spatial_cost_scale,
+                    device=device
+                )
+            elif spatial_mode == "learnable":
+                from spatial_wrapper_learn import SpatialNet as LearnableSpatialNet
+                self.spatial_net = LearnableSpatialNet(
+                    model=model,
+                    A=A,
+                    B=B,
+                    D=D,
+                    spatial_cost_scale=spatial_cost_scale,
+                    device=device
+                )
         
         self.l1_enabled = l1_scale > 0
         if self.l1_enabled:
