@@ -50,6 +50,8 @@ def collision_penalty(x_in, y_in, x_out, y_out, threshold):
     Returns:
         torch.Tensor: A scalar penalty value.
     """
+    # Get device from input tensors
+    device = x_in.device
     # Concatenate input and output positions to treat them as one group.
     x_all = torch.cat((x_in, x_out), dim=0)
     y_all = torch.cat((y_in, y_out), dim=0)
@@ -62,7 +64,7 @@ def collision_penalty(x_in, y_in, x_out, y_out, threshold):
     dists = torch.cdist(positions, positions, p=2)
     
     # Set the diagonal to infinity to avoid self-collision penalty.
-    mask = torch.eye(N_total, device=positions.device, dtype=torch.bool)
+    mask = torch.eye(N_total, device=device, dtype=torch.bool)
     dists = dists.masked_fill(mask, float('inf'))
 
     
@@ -75,24 +77,26 @@ def collision_penalty(x_in, y_in, x_out, y_out, threshold):
 
 
 # Function to compute distance matrix for a given linear layer
-def compute_distance_matrix(N, M, A, B, D,cache_dir="cache"):
+def compute_distance_matrix(N, M, A, B, D, device="cuda"):
+    # Existing code
     x_in = torch.linspace(-A / 2, A / 2, N)
     y_in = torch.full((N,), -D / 2)
     x_out = torch.linspace(-B / 2, B / 2, M)
     y_out = torch.full((M,), D / 2)
 
     # Convert to learnable parameters
-    x_in = nn.Parameter(x_in)
-    y_in = nn.Parameter(y_in)
-    x_out = nn.Parameter(x_out)
-    y_out = nn.Parameter(y_out)
+    x_in = nn.Parameter(x_in.to(device))
+    y_in = nn.Parameter(y_in.to(device))
+    x_out = nn.Parameter(x_out.to(device))
+    y_out = nn.Parameter(y_out.to(device))
 
+    return nn.ParameterList([x_in, y_in, x_out, y_out])
 
-    return nn.ParameterList( [x_in,y_in,x_out,y_out])
 def compute_distance_matrix_cdist(o_X, o_Y, i_X, i_Y):
     """
     Uses torch.cdist to compute the pairwise Euclidean distance matrix.
     """
+    device = o_X.device  # Get device from input tensor
     inputs = torch.stack((i_X, i_Y), dim=1)
     outputs = torch.stack((o_X, o_Y), dim=1)
     return torch.cdist(inputs, outputs)

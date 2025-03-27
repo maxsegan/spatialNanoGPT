@@ -199,7 +199,32 @@ if block_size < model.config.block_size:
 model.to(device)
 
 regularized_model = RegularizedGPT(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=spatial_cost_scale, l1_scale=l1_scale, spatial_mode=spatial_mode, device=device)
+model.to(device)
 raw_model = regularized_model.model  # This is the underlying GPT model for optimizer
+if init_from == 'resume':
+    print("Loading regularization settings from checkpoint")
+    
+    # Load spatial matrices for swappable mode
+    if spatial_mode == "swappable" and 'linear_distance_matrices' in checkpoint and 'value_distance_matrices' in checkpoint:
+        spatial_net = regularized_model.module.spatial_net if ddp else regularized_model.spatial_net
+        
+        # Load linear distance matrices
+        for i, matrix in enumerate(checkpoint['linear_distance_matrices']):
+            if i < len(spatial_net.linear_distance_matrices):
+                spatial_net.linear_distance_matrices[i] = matrix.to(device)
+        
+        # Load value distance matrices
+        for i, matrix in enumerate(checkpoint['value_distance_matrices']):
+            if i < len(spatial_net.value_distance_matrices):
+                spatial_net.value_distance_matrices[i] = matrix.to(device)
+        
+        print("Loaded optimized distance matrices from checkpoint")
+    
+    # Load spatial state dict for learnable mode
+    elif spatial_mode == "learnable" and 'spatial_state' in checkpoint:
+        spatial_net = regularized_model.module.spatial_net if ddp else regularized_model.spatial_net
+        spatial_net.load_state_dict(checkpoint['spatial_state'])
+        print("Loaded learnable spatial parameters from checkpoint")
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
@@ -301,6 +326,18 @@ while True:
                         'spatial_mode': spatial_mode,
                     },
                 }
+                if spatial_mode in ["learnable", "swappable"]:
+                    spatial_net = regularized_model.module.spatial_net if ddp else regularized_model.spatial_net
+                    
+                    if spatial_mode == "learnable":
+                        checkpoint['spatial_state'] = spatial_net.state_dict()
+                    elif spatial_mode == "swappable":
+                        linear_matrices = [matrix.detach().cpu() for matrix in spatial_net.linear_distance_matrices]
+                        checkpoint['linear_distance_matrices'] = linear_matrices
+                        
+                        # Save value distance matrices
+                        value_matrices = [matrix.detach().cpu() for matrix in spatial_net.value_distance_matrices]
+                        checkpoint['value_distance_matrices'] = value_matrices
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, wandb_run_name + 'ckpt.pt'))
     if iter_num == 0 and eval_only:

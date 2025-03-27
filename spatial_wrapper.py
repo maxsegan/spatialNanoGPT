@@ -166,27 +166,37 @@ class SpatialNet(nn.Module):
                 self._extract_layers(layer)
 
     def optimize(self):
-        print("init",self.get_cost(),flush=True)
+        print("init", self.get_cost(), flush=True)
+        
         # Compute cost for linear layers
-        new_dist_matrices= []
-        i=0
-        total=len(self.linear_distance_matrices)+len(self.value_distance_matrices),
+        new_dist_matrices = []
+        i = 0
+        total = len(self.linear_distance_matrices) + len(self.value_distance_matrices)
+        
         for layer, dist_matrix in zip(self.linear_layers, self.linear_distance_matrices):
-            i+=1
-            #print(i,total,dist_matrix.shape,flush=True)
-            weight_abs = torch.abs(layer.weight)
-            new_dist_matrices.append(alternative_hungarian_optimization(weight_abs, dist_matrix))
-        self.linear_distance_matrices=new_dist_matrices
-        new_dist_matrices= []
-        # Compute cost for value projection layers
+            i += 1
+            print(f"{i}/{total} optimizing linear layer", flush=True)
+            weight_abs = torch.abs(layer.weight).detach().cpu()
+            dist_matrix_cpu = dist_matrix.detach().cpu()
+            optimized_dist = alternative_hungarian_optimization(weight_abs, dist_matrix_cpu)
+            optimized_dist = optimized_dist.to(dist_matrix.device)
+            new_dist_matrices.append(optimized_dist)
+        
+        self.linear_distance_matrices = new_dist_matrices
+        
+        new_dist_matrices = []
         for value_proj, dist_matrix in zip(self.value_networks, self.value_distance_matrices):
-            i+=1
-            #print(i,total,dist_matrix.shape,flush=True)
-
-            weight_abs = torch.abs(value_proj[0])
-            new_dist_matrices.append(alternative_hungarian_optimization(weight_abs, dist_matrix))
-        self.value_distance_matrices=new_dist_matrices
-        print("final",self.get_cost(),flush=True)
+            i += 1
+            print(f"{i}/{total} optimizing value network", flush=True)
+            weight_abs = torch.abs(value_proj[0]).detach().cpu()
+            dist_matrix_cpu = dist_matrix.detach().cpu()
+            optimized_dist = alternative_hungarian_optimization(weight_abs, dist_matrix_cpu)
+            optimized_dist = optimized_dist.to(dist_matrix.device)
+            new_dist_matrices.append(optimized_dist)
+        
+        self.value_distance_matrices = new_dist_matrices
+        
+        print("final", self.get_cost(), flush=True)
 
     def get_cost(self):
         total_cost = 0.0
