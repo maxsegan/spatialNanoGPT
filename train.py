@@ -68,6 +68,7 @@ warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # regularization
+optimize_interval = 500
 spatial_mode = "fixed"
 spatial_cost_scale = 1e-5
 l1_scale = 0.0
@@ -340,8 +341,8 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
-    if iter_num % log_interval == 0:
-        # Run Hungarian optimization for swappable mode when we eval
+    if iter_num % optimize_interval == 0:
+        # Run Hungarian optimization for swappable
         if spatial_mode == "swappable":
             if master_process:
                 print(f"Running Hungarian optimization at step {iter_num}")

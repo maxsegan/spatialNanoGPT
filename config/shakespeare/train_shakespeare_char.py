@@ -31,7 +31,9 @@ min_lr = 1e-4 # learning_rate / 10 usually
 beta2 = 0.99 # make a bit bigger because number of tokens per iter is small
 
 warmup_iters = 100 # not super necessary potentially
+spatial_mode = "fixed"
+optimize_interval = 500
 
 # on macbook also add
 # device = 'cpu'  # run on cpu only
-# compile = False # do not torch compile the model
+compile = False # do not torch compile the model
