@@ -205,5 +205,6 @@ class SpatialNet(nn.Module):
     def get_stats(self):
         return compute_tensor_stats(self.linear_distance_matrices+self.value_distance_matrices )
     
-    def forward(self, *args):
-        return self.model(*args)
+    def forward(self, idx, targets=None):
+        return self.model(idx, targets=targets)
+    
