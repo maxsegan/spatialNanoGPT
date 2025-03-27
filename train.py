@@ -352,7 +352,12 @@ while True:
             logits, loss = regularized_model(X, Y)
             # Scale the entire loss (model + cost) for gradient accumulation
             cost = regularized_model.module.get_cost() if ddp else regularized_model.get_cost()
-            total_loss = (loss + cost) / gradient_accumulation_steps
+            logging_loss = loss
+            if spatial_mode != "learnable":
+                total_loss = (loss + cost) / gradient_accumulation_steps
+            else:
+                total_loss = loss / gradient_accumulation_steps
+                logging_loss = loss - cost
 
         X, Y = get_batch('train')
         scaler.scale(total_loss).backward()
@@ -373,7 +378,8 @@ while True:
     if iter_num % log_interval == 0 and master_process:
         # get loss as float. note: this is a CPU-GPU sync point
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
-        lossf = total_loss.item() * gradient_accumulation_steps
+        lossf = logging_loss.item() * gradient_accumulation_steps
+
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
