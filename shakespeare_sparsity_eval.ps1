@@ -1,5 +1,6 @@
 # PowerShell script to run the incremental sparsification and evaluation workflow
 # This script takes the trained models and evaluates only new models, reusing existing results
+# Now includes evaluation at higher sparsity levels (85%, 90%, 95%)
 
 # Configuration
 $EXPERIMENTS_DIR = "regularization_experiments"
@@ -11,7 +12,7 @@ if (-not (Test-Path "$EXPERIMENTS_DIR\$RESULTS_DIR")) {
     New-Item -ItemType Directory -Path "$EXPERIMENTS_DIR\$RESULTS_DIR" | Out-Null
 }
 
-Write-Host "Starting incremental sparsity evaluation workflow..." -ForegroundColor Green
+Write-Host "Starting incremental sparsity evaluation workflow with higher sparsity levels (up to 95%)..." -ForegroundColor Green
 Write-Host "Experiments directory: $EXPERIMENTS_DIR" -ForegroundColor Cyan
 Write-Host "Results will be saved to: $EXPERIMENTS_DIR\$RESULTS_DIR" -ForegroundColor Cyan
 

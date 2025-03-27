@@ -45,8 +45,8 @@ args = parser.parse_args()
 results_path = os.path.join(args.experiments_dir, args.results_dir)
 os.makedirs(results_path, exist_ok=True)
 
-# Define sparsity levels to evaluate (0% to 80% in steps of 5%)
-sparsity_levels = np.arange(0, 0.85, 0.05)
+# Define sparsity levels to evaluate (0% to 95% in steps of 5%)
+sparsity_levels = [float(x) for x in np.arange(0, 1.0, 0.05)]
 
 # Set up data loading
 def get_batch(split, data_dir=args.data_dir, block_size=args.block_size, batch_size=args.batch_size):
@@ -124,7 +124,7 @@ def estimate_loss(model, fixed_batches):
     return losses.mean().item()
 
 def load_model_from_checkpoint(checkpoint_path, device=args.device):
-    """Load a model from a checkpoint file."""
+    """Load a model from a checkpoint file with support for spatial modes."""
     if not os.path.exists(checkpoint_path):
         print(f"Checkpoint not found: {checkpoint_path}")
         return None, None
@@ -146,11 +146,57 @@ def load_model_from_checkpoint(checkpoint_path, device=args.device):
             'l1_scale': 0.0,
             'spatial_cost_scale': 0.0,
             'weight_decay': 0.0,
+            'spatial_mode': 'fixed',  # Default mode
         })
+        
+        # Handle spatial matrices for different modes
+        spatial_mode = regularization.get('spatial_mode', 'fixed')
+        
+        # If the model was using a spatial regularization mode, we need to properly initialize it
+        if regularization.get('spatial_cost_scale', 0.0) > 0:
+            from regularized_gpt import RegularizedGPT
+            
+            # Recreate the regularized model with the same parameters
+            regularized_model = RegularizedGPT(
+                model=model,
+                l1_scale=regularization.get('l1_scale', 0.0),
+                spatial_cost_scale=regularization.get('spatial_cost_scale', 0.0),
+                A=1.0,  # Default values - should match what was used in training
+                B=1.0,
+                D=1.0,
+                device=device,
+                spatial_mode=spatial_mode
+            )
+            
+            # For swappable mode, load the optimized distance matrices if available
+            if spatial_mode == "swappable" and 'linear_distance_matrices' in checkpoint and 'value_distance_matrices' in checkpoint:
+                spatial_net = regularized_model.spatial_net
+                
+                # Load linear distance matrices
+                for i, matrix in enumerate(checkpoint['linear_distance_matrices']):
+                    if i < len(spatial_net.linear_distance_matrices):
+                        spatial_net.linear_distance_matrices[i] = matrix.to(device)
+                
+                # Load value distance matrices
+                for i, matrix in enumerate(checkpoint['value_distance_matrices']):
+                    if i < len(spatial_net.value_distance_matrices):
+                        spatial_net.value_distance_matrices[i] = matrix.to(device)
+                        
+                print(f"Loaded optimized distance matrices from checkpoint for {spatial_mode} mode")
+            
+            # For learnable mode, load the spatial state dict
+            elif spatial_mode == "learnable" and 'spatial_state' in checkpoint:
+                regularized_model.spatial_net.load_state_dict(checkpoint['spatial_state'])
+                print(f"Loaded learnable spatial parameters from checkpoint for {spatial_mode} mode")
+            
+            # Use the underlying model for sparsification
+            model = regularized_model.model
         
         return model, regularization
     except Exception as e:
         print(f"Error loading checkpoint {checkpoint_path}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None, None
 
 def find_checkpoints(experiments_dir=args.experiments_dir):
@@ -230,22 +276,29 @@ def find_checkpoints(experiments_dir=args.experiments_dir):
     return checkpoints
 
 def check_existing_results(model_name, results_dir=os.path.join(args.experiments_dir, args.results_dir)):
-    """Check if evaluation results already exist for this model."""
+    """Check if evaluation results already exist for this model and identify missing sparsity levels."""
     csv_path = os.path.join(results_dir, f"{model_name}_sparsity.csv")
     if os.path.exists(csv_path):
         try:
-            # Try to load the CSV and check if it contains all sparsity levels
+            # Load the CSV and check which sparsity levels need evaluation
             df = pd.read_csv(csv_path)
-            if len(df) == len(sparsity_levels):
-                print(f"Found existing results for {model_name}")
-                return df
+            existing_sparsity = df['target_sparsity'].values
+            
+            # Find missing sparsity levels
+            missing_sparsity = [s for s in sparsity_levels if s not in existing_sparsity]
+            
+            if not missing_sparsity:
+                print(f"Found complete results for {model_name}")
+                return df, []
             else:
-                print(f"Found incomplete results for {model_name}, will re-evaluate")
-                return None
+                # Format the missing sparsity levels for cleaner output
+                missing_formatted = [f"{s:.2f}" for s in missing_sparsity]
+                print(f"Found partial results for {model_name}, missing sparsity levels: {', '.join(missing_formatted)}")
+                return df, missing_sparsity
         except Exception as e:
             print(f"Error reading existing results for {model_name}: {str(e)}")
-            return None
-    return None
+            return None, sparsity_levels
+    return None, sparsity_levels
 
 def load_combined_results(results_dir=os.path.join(args.experiments_dir, args.results_dir)):
     """Load the combined results file if it exists."""
@@ -304,47 +357,57 @@ def main():
         print("No checkpoints found. Exiting.")
         return
     
-    # Filter checkpoints to only process new ones or if forced to reevaluate
+    # Filter checkpoints to only process new ones or missing sparsity levels
     models_to_process = []
-    existing_model_results = {}
     
     for ckpt_info in checkpoints:
         model_name = ckpt_info['name']
+        
         if args.force_reevaluate:
+            ckpt_info['missing_sparsity'] = sparsity_levels
             models_to_process.append(ckpt_info)
             continue
-            
-        # Check if we already have results for this model
-        existing_results = check_existing_results(model_name)
+        
+        # Check if we already have results for this model and what sparsity levels are missing
+        existing_results, missing_sparsity = check_existing_results(model_name)
+        
         if existing_results is not None:
-            existing_model_results[model_name] = existing_results
+            # Update combined results with existing data
+            combined_results = update_combined_results(existing_results, combined_results)
+            
+            # If there are missing sparsity levels to evaluate, add to processing list
+            if missing_sparsity:
+                ckpt_info['existing_results'] = existing_results
+                ckpt_info['missing_sparsity'] = missing_sparsity
+                models_to_process.append(ckpt_info)
         else:
+            # No existing results, process all sparsity levels
+            ckpt_info['missing_sparsity'] = sparsity_levels
             models_to_process.append(ckpt_info)
     
-    print(f"Found {len(existing_model_results)} models with existing results")
-    print(f"Will process {len(models_to_process)} new models")
+    print(f"Will process {len(models_to_process)} models with missing sparsity levels")
     
-    # First, update combined results with all existing model results
-    for model_name, results_df in existing_model_results.items():
-        combined_results = update_combined_results(results_df, combined_results)
-    
-    # Process each new model
+    # Process each model
     for ckpt_info in tqdm(models_to_process, desc="Processing models"):
         checkpoint_path = ckpt_info['checkpoint_path']
         model_name = ckpt_info['name']
+        missing_sparsity = ckpt_info['missing_sparsity']
         
-        print(f"\nEvaluating {model_name} at different sparsity levels...")
+        print(f"\nEvaluating {model_name} at {len(missing_sparsity)} missing sparsity levels...")
         
-        # Create a results dataframe for this model
-        model_results = []
+        # Get existing results or create empty results list
+        if 'existing_results' in ckpt_info:
+            model_results = ckpt_info['existing_results'].to_dict('records')
+        else:
+            model_results = []
         
         # Extract regularization parameters
         l1_scale = ckpt_info.get('l1_scale', 0.0)
         weight_decay = ckpt_info.get('weight_decay', 0.0)
         spatial_cost_scale = ckpt_info.get('spatial_cost_scale', 0.0)
         
-        # Evaluate at each sparsity level
-        for target_sparsity in tqdm(sparsity_levels, desc=f"Sparsity levels for {model_name}"):
+        # Evaluate at each missing sparsity level
+        for target_sparsity in tqdm(missing_sparsity, desc=f"Sparsity levels for {model_name}"):
             try:
                 # Create a copy of the model for this sparsity level
                 sparsified_model, regularization = load_model_from_checkpoint(checkpoint_path)
@@ -361,6 +424,9 @@ def main():
                         weight_decay = regularization['weight_decay']
                     if spatial_cost_scale == 0.0 and 'spatial_cost_scale' in regularization:
                         spatial_cost_scale = regularization['spatial_cost_scale']
+                    
+                    # Also save spatial mode if available
+                    spatial_mode = regularization.get('spatial_mode', 'fixed')
                 
                 # Apply pruning
                 actual_sparsity = apply_magnitude_pruning(sparsified_model, target_sparsity)
@@ -376,7 +442,8 @@ def main():
                     'val_loss': loss,
                     'l1_scale': l1_scale,
                     'weight_decay': weight_decay,
-                    'spatial_cost_scale': spatial_cost_scale
+                    'spatial_cost_scale': spatial_cost_scale,
+                    'spatial_mode': spatial_mode if 'spatial_mode' in locals() else 'fixed'
                 }
                 model_results.append(result)
                 
