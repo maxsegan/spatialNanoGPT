@@ -307,7 +307,7 @@ while True:
                 "l1_scale": l1_scale,
                 "spatial_cost_scale": spatial_cost_scale,
                 "weight_decay": weight_decay,
-                "regularization_cost": cost.item() if cost is not None else 0.0,
+                "regularization_cost": cost.item() if ('cost' in locals() or 'cost' in globals()) and cost is not None else 0.0,
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
