@@ -2,6 +2,7 @@
 .idea
 .ipynb_checkpoints/
 .vscode
+CLAUDE.md
 __pycache__/
 *.bin
 *.pkl
