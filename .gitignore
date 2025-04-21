@@ -11,3 +11,5 @@ input.txt
 env/
 venv/
 /regularization_experiments
+/gpt2_eval
+/regularization_pareto

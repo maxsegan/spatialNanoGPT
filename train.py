@@ -71,6 +71,7 @@ min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchi
 optimize_interval = 500
 spatial_mode = "fixed"
 spatial_cost_scale = 1e-5
+spatial_d_value = 0.0
 l1_scale = 0.0
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
@@ -198,7 +199,7 @@ if block_size < model.config.block_size:
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
 model.to(device)
 
-regularized_model = RegularizedGPT(model, A=1.0, B=1.0, D=1.0, spatial_cost_scale=spatial_cost_scale, l1_scale=l1_scale, spatial_mode=spatial_mode, device=device)
+regularized_model = RegularizedGPT(model, A=1.0, B=1.0, D=spatial_d_value, spatial_cost_scale=spatial_cost_scale, l1_scale=l1_scale, spatial_mode=spatial_mode, device=device)
 model.to(device)
 raw_model = regularized_model.model  # This is the underlying GPT model for optimizer
 if init_from == 'resume':
@@ -306,6 +307,7 @@ while True:
                 "mfu": running_mfu*100, # convert to percentage
                 "l1_scale": l1_scale,
                 "spatial_cost_scale": spatial_cost_scale,
+                "spatial_d_value": spatial_d_value,  # Added D value to logging
                 "weight_decay": weight_decay,
                 "regularization_cost": cost.item() if ('cost' in locals() or 'cost' in globals()) and cost is not None else 0.0,
             })
@@ -322,6 +324,7 @@ while True:
                     'regularization': {
                         'l1_scale': l1_scale,
                         'spatial_cost_scale': spatial_cost_scale,
+                        'spatial_d_value': spatial_d_value,  # Added D value to saved config
                         'weight_decay': weight_decay,
                         'spatial_mode': spatial_mode,
                     },

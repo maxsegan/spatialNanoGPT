@@ -45,8 +45,8 @@ args = parser.parse_args()
 results_path = os.path.join(args.experiments_dir, args.results_dir)
 os.makedirs(results_path, exist_ok=True)
 
-# Define sparsity levels to evaluate (0% to 95% in steps of 5%)
-sparsity_levels = [float(x) for x in np.arange(0, 1.0, 0.05)]
+# Define sparsity levels
+sparsity_levels = [0.0, 0.25, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
 
 # Set up data loading
 def get_batch(split, data_dir=args.data_dir, block_size=args.block_size, batch_size=args.batch_size):
@@ -284,14 +284,20 @@ def check_existing_results(model_name, results_dir=os.path.join(args.experiments
             df = pd.read_csv(csv_path)
             existing_sparsity = df['target_sparsity'].values
             
-            # Find missing sparsity levels
-            missing_sparsity = [s for s in sparsity_levels if s not in existing_sparsity]
+            # Find missing sparsity levels with tolerance for floating point issues
+            tolerance = 0.001  # Tolerance for floating point comparison
+            missing_sparsity = []
+            
+            for target in sparsity_levels:
+                # Check if any existing sparsity level is close to this target
+                if not any(abs(existing - target) <= tolerance for existing in existing_sparsity):
+                    missing_sparsity.append(target)
             
             if not missing_sparsity:
                 print(f"Found complete results for {model_name}")
                 return df, []
             else:
-                # Format the missing sparsity levels for cleaner output
+                # Format missing levels for cleaner output
                 missing_formatted = [f"{s:.2f}" for s in missing_sparsity]
                 print(f"Found partial results for {model_name}, missing sparsity levels: {', '.join(missing_formatted)}")
                 return df, missing_sparsity
