@@ -110,16 +110,42 @@ def apply_magnitude_pruning(model, sparsity):
     actual_sparsity = total_pruned / total_weights if total_weights > 0 else 0.0
     return actual_sparsity
 
-# Evaluation function
 @torch.no_grad()
 def estimate_loss(model, fixed_batches):
-    """Estimate model loss on validation data using fixed batches."""
+    """Estimate model loss on validation data using fixed batches in parallel."""
     model.eval()
-    losses = torch.zeros(len(fixed_batches), device=args.device)
+    batch_count = len(fixed_batches)
+    losses = torch.zeros(batch_count, device=args.device)
     
-    for k, (X, Y) in enumerate(fixed_batches):
-        logits, loss = model(X, Y)
-        losses[k] = loss.item()
+    # Process batches in chunks of 20 (or less for the final chunk)
+    chunk_size = 20
+    for i in range(0, batch_count, chunk_size):
+        end_idx = min(i + chunk_size, batch_count)
+        current_chunk = fixed_batches[i:end_idx]
+        
+        batch_X = []
+        batch_Y = []
+        for X, Y in current_chunk:
+            batch_X.append(X)
+            batch_Y.append(Y)
+        
+        batched_X = torch.cat(batch_X, dim=0)
+        batched_Y = torch.cat(batch_Y, dim=0)
+        
+        logits, loss = model(batched_X, batched_Y)
+        
+        # Still need to test this
+        # If the model returns a single loss, we need to reshape the outputs
+        # to get individual losses for each original batch
+        if isinstance(loss, torch.Tensor) and loss.numel() == 1:
+            # The model would need to be modified to return per-sample losses
+            # For now, we'll just duplicate the loss for each batch in the chunk
+            chunk_losses = torch.full((end_idx - i,), loss.item(), device=args.device)
+        else:
+            # Assuming the model now returns a tensor of losses, one per original batch
+            chunk_losses = loss
+            
+        losses[i:end_idx] = chunk_losses
     
     return losses.mean().item()
 
