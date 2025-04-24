@@ -34,7 +34,7 @@ config = GPTConfig(
     n_head=model_args['n_head'],
     n_embd=model_args['n_embd'],
     dropout=model_args.get('dropout', 0.0),
-    bias=model_args.get('bias', False)
+    bias=model_args.get('bias', True)
 )
 
 # Load state dict into model
