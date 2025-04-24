@@ -2,10 +2,11 @@
 Sparsify and evaluate GPT2 models loaded from Hugging Face at different sparsity levels.
 This script:
 1. Loads trained GPT2 models from Hugging Face repository
-2. Filters for checkpoints that start with 'l1_', 'l1only_', 'spatialNanoGPT'
-3. Applies different levels of sparsity (0% to 90%)
-4. Evaluates the performance (loss) at each sparsity level
-5. Saves results to CSV files and creates visualization plots
+2. Filters for checkpoints that start with 'spatial' from the default repo
+3. Additionally loads a hardcoded checkpoint from maxsegan/gpt2_l1_32_100k
+4. Applies different levels of sparsity (0% to 90%)
+5. Evaluates the performance (loss) at each sparsity level
+6. Saves results to CSV files and creates visualization plots
 """
 
 import os
@@ -24,8 +25,6 @@ from model import GPT, GPTConfig
 
 # Configure argument parser
 parser = argparse.ArgumentParser(description="Sparsify and evaluate GPT2 models from Hugging Face")
-parser.add_argument('--repo_id', type=str, default='GitWyd/SNN',
-                    help='Hugging Face repository ID')
 parser.add_argument('--batch_size', type=int, default=64,
                     help='Batch size for evaluation')
 parser.add_argument('--block_size', type=int, default=1024,
@@ -48,6 +47,19 @@ args.data_dir = os.path.normpath(args.data_dir)
 
 # Create results directory
 os.makedirs(args.results_dir, exist_ok=True)
+
+# Define default repository ID
+DEFAULT_REPO_ID = 'GitWyd/SNN'
+
+# Define hardcoded checkpoints for comparison
+COMPARISON_CHECKPOINTS = [
+    {
+        'repo_id': 'maxsegan/gpt2_l1_32_100k',
+        'filename': 'checkpoint.pt',
+        'name': 'maxsegan_gpt2_l1_32_100k'
+    }
+    # Additional checkpoints can be added here in the future
+]
 
 # Define sparsity levels
 sparsity_levels = [0.0, 0.25, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
@@ -139,56 +151,61 @@ def estimate_loss(model, fixed_batches):
     return losses.mean().item()
 
 # Find checkpoint files in the Hugging Face repository
-def find_checkpoints(repo_id=args.repo_id):
+def find_checkpoints():
     """Find and download checkpoint files from the Hugging Face repository."""
+    checkpoints = []
+    
     try:
-        # List files in the repository
-        all_files = list_repo_files(repo_id)
+        # First, get spatial checkpoints from default repo
+        print(f"Finding 'spatial' checkpoints in {DEFAULT_REPO_ID}...")
+        all_files = list_repo_files(DEFAULT_REPO_ID)
         
-        # Filter for checkpoint files in the root directory that match our prefixes
-        valid_prefixes = ['l1_', 'l1only_', 'spatial']
-        checkpoint_files = []
-        
+        # Filter for spatial checkpoint files in the root directory
         for file_path in all_files:
             # Check if file is in root directory (no '/' in the path except potentially at the beginning)
             if '/' not in file_path.strip('/') and file_path.endswith('.pt'):
-                # Check if filename starts with one of our valid prefixes
+                # Check if filename starts with spatial
                 filename = os.path.basename(file_path)
-                if any(filename.startswith(prefix) for prefix in valid_prefixes):
+                if filename.startswith('spatial'):
                     # fixed isn't a prefix so it's just easier to write a hack
-                    if filename.startswith('spatial') and not 'fixedckpt' in filename:
+                    if not 'fixedckpt' in filename:
                         continue
                     # Okay this is weird but we have dup checkpoints, and this is a hacky but workable way to dedup the way we want
-                    if '3057' not in filename or '30638':
+                    if '3057' not in filename and '30638' not in filename:
                         continue
-                    checkpoint_files.append(file_path)
+                    
+                    try:
+                        local_file = hf_hub_download(repo_id=DEFAULT_REPO_ID, filename=file_path)
+                        model_name = os.path.splitext(os.path.basename(file_path))[0]
+                        checkpoints.append({
+                            'name': model_name,
+                            'checkpoint_path': local_file,
+                        })
+                    except Exception as e:
+                        print(f"Error processing {file_path}: {str(e)}")
+                        continue
         
-        # Download and extract model info from each checkpoint
-        checkpoints = []
-        for file_path in checkpoint_files:
+        # Now add hardcoded comparison checkpoints
+        print(f"Adding {len(COMPARISON_CHECKPOINTS)} hardcoded comparison checkpoints...")
+        for ckpt in COMPARISON_CHECKPOINTS:
             try:
-                local_file = hf_hub_download(repo_id=repo_id, filename=file_path)
-                
-                # Extract model name
-                model_name = os.path.splitext(os.path.basename(file_path))[0]
-                
-                # Add checkpoint info with defaults
+                local_file = hf_hub_download(repo_id=ckpt['repo_id'], filename=ckpt['filename'])
                 checkpoints.append({
-                    'name': model_name,
+                    'name': ckpt['name'],
                     'checkpoint_path': local_file,
                 })
-                
             except Exception as e:
-                print(f"Error processing {file_path}: {str(e)}")
+                print(f"Error downloading checkpoint from {ckpt['repo_id']}: {str(e)}")
                 continue
         
-        print(f"Found {len(checkpoints)} checkpoints matching criteria in the repository")
+        print(f"Found total of {len(checkpoints)} checkpoints for evaluation")
         for ckpt in checkpoints:
             print(f"  - {ckpt['name']}")
+        
         return checkpoints
     
     except Exception as e:
-        print(f"Error accessing Hugging Face repository: {str(e)}")
+        print(f"Error accessing Hugging Face repositories: {str(e)}")
         return []
 
 # Check for existing evaluation results
@@ -422,7 +439,7 @@ def main():
         print(f"Loaded existing results for {combined_results['model_name'].nunique()} models")
     
     # Find all checkpoints in the HF repository
-    print(f"Finding checkpoints in HF repository {args.repo_id}...")
+    print("Finding checkpoints...")
     checkpoints = find_checkpoints()
     
     if not checkpoints:
