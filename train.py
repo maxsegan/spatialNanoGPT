@@ -301,7 +301,7 @@ def estimate_loss():
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
-                logits, loss = raw_model(X, Y)
+                logits, loss = regularized_model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     regularized_model.train()
