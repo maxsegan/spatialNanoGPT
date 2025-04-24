@@ -186,49 +186,6 @@ elif init_from == 'resume':
     model.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
-    
-    # Restore RNG states to ensure reproducible sampling
-    if ddp:
-        # For DDP, load the RNG state specific to this rank
-        if 'cpu_rng_states' in checkpoint and 'ddp_world_size' in checkpoint:
-            saved_world_size = checkpoint['ddp_world_size']
-            
-            # If the current world size matches the saved one, we can restore exact states
-            if saved_world_size == ddp_world_size:
-                # Convert numpy back to tensor for CPU state
-                cpu_rng_state = torch.from_numpy(checkpoint['cpu_rng_states'][ddp_rank])
-                # Ensure the state is the right size (trim excess padding)
-                if 'cpu_rng_state_sizes' in checkpoint:
-                    state_size = checkpoint['cpu_rng_state_sizes'][ddp_rank]
-                    cpu_rng_state = cpu_rng_state[:state_size]
-                torch.set_rng_state(cpu_rng_state)
-                
-                # Handle GPU states if available
-                if torch.cuda.is_available() and 'gpu_rng_states' in checkpoint:
-                    gpu_rng_state = torch.from_numpy(checkpoint['gpu_rng_states'][ddp_rank])
-                    # Ensure the state is the right size (trim excess padding)
-                    if 'gpu_rng_state_sizes' in checkpoint:
-                        state_size = checkpoint['gpu_rng_state_sizes'][ddp_rank]
-                        gpu_rng_state = gpu_rng_state[:state_size]
-                    torch.cuda.set_rng_state(gpu_rng_state)
-                
-                print(f"Rank {ddp_rank}: Restored RNG state from checkpoint")
-            else:
-                # If world sizes don't match, we can't restore exact per-rank states
-                # Instead, set a deterministic but different seed for each rank
-                print(f"Warning: Previous run had {saved_world_size} processes, now using {ddp_world_size}.")
-                print(f"Rank {ddp_rank}: Using deterministic seed derived from checkpoint iter_num")
-                rand_seed = 1337 + iter_num * 1000 + ddp_rank
-                torch.manual_seed(rand_seed)
-                if torch.cuda.is_available():
-                    torch.cuda.manual_seed(rand_seed)
-    else:
-        # For non-DDP, restore the single process state
-        if 'cpu_rng_state' in checkpoint:
-            torch.set_rng_state(torch.from_numpy(checkpoint['cpu_rng_state']))
-            if torch.cuda.is_available() and 'gpu_rng_state' in checkpoint:
-                torch.cuda.set_rng_state(torch.from_numpy(checkpoint['gpu_rng_state']))
-            print("Restored RNG state from checkpoint")
 elif init_from.startswith('gpt2'):
     print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
     # initialize from OpenAI GPT-2 weights
@@ -301,7 +258,7 @@ def estimate_loss():
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
-                logits, loss = regularized_model(X, Y)
+                logits, loss = raw_model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     regularized_model.train()
@@ -375,62 +332,7 @@ while True:
                     },
                 }
                 
-                # Handle RNG states for each process
-                if ddp:
-                    # Get local RNG states
-                    cpu_rng_state = torch.get_rng_state()
-                    gpu_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
-                    
-                    # Serialize the RNG states to tensors of fixed size
-                    cpu_state_size = cpu_rng_state.numel()
-                    max_cpu_state_size = torch.tensor([cpu_state_size], device=device)
-                    torch.distributed.all_reduce(max_cpu_state_size, op=torch.distributed.ReduceOp.MAX)
-                    max_cpu_state_size = max_cpu_state_size.item()
-                    
-                    # Pad CPU RNG state if needed
-                    if cpu_state_size < max_cpu_state_size:
-                        padded_cpu_state = torch.zeros(max_cpu_state_size, dtype=cpu_rng_state.dtype, device=device)
-                        padded_cpu_state[:cpu_state_size] = cpu_rng_state.to(device)
-                        cpu_rng_state_tensor = padded_cpu_state
-                    else:
-                        cpu_rng_state_tensor = cpu_rng_state.to(device)
-                    
-                    # Create a tensor list to gather all CPU RNG states
-                    cpu_states_gathered = [torch.zeros_like(cpu_rng_state_tensor) for _ in range(ddp_world_size)]
-                    torch.distributed.all_gather(cpu_states_gathered, cpu_rng_state_tensor)
-                    
-                    # Process GPU RNG states if available
-                    if gpu_rng_state is not None:
-                        gpu_state_size = gpu_rng_state.numel()
-                        max_gpu_state_size = torch.tensor([gpu_state_size], device=device)
-                        torch.distributed.all_reduce(max_gpu_state_size, op=torch.distributed.ReduceOp.MAX)
-                        max_gpu_state_size = max_gpu_state_size.item()
-                        
-                        # Pad GPU RNG state if needed
-                        if gpu_state_size < max_gpu_state_size:
-                            padded_gpu_state = torch.zeros(max_gpu_state_size, dtype=gpu_rng_state.dtype, device=device)
-                            padded_gpu_state[:gpu_state_size] = gpu_rng_state.to(device)
-                            gpu_rng_state_tensor = padded_gpu_state
-                        else:
-                            gpu_rng_state_tensor = gpu_rng_state.to(device)
-                        
-                        # Create a tensor list to gather all GPU RNG states
-                        gpu_states_gathered = [torch.zeros_like(gpu_rng_state_tensor) for _ in range(ddp_world_size)]
-                        torch.distributed.all_gather(gpu_states_gathered, gpu_rng_state_tensor)
-                        
-                        # Store in checkpoint (only the master process will use this)
-                        checkpoint['gpu_rng_states'] = [state.cpu().numpy() for state in gpu_states_gathered]
-                        checkpoint['gpu_rng_state_sizes'] = [gpu_state_size] * ddp_world_size
-                    
-                    # Store in checkpoint (only the master process will use this)
-                    checkpoint['cpu_rng_states'] = [state.cpu().numpy() for state in cpu_states_gathered]
-                    checkpoint['cpu_rng_state_sizes'] = [cpu_state_size] * ddp_world_size
-                    checkpoint['ddp_world_size'] = ddp_world_size
-                else:
-                    # For non-DDP, just store the single process state
-                    checkpoint['cpu_rng_state'] = torch.get_rng_state().numpy()
-                    if torch.cuda.is_available():
-                        checkpoint['gpu_rng_state'] = torch.cuda.get_rng_state().numpy()
+                
                 if spatial_mode in ["learnable", "swappable"]:
                     spatial_net = regularized_model.module.spatial_net if ddp else regularized_model.spatial_net
                     
