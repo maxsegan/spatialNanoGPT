@@ -4,7 +4,7 @@
 
 wandb_log = True
 wandb_project = 'spatial-gpt2'
-wandb_run_name='l1only_4e-8'
+wandb_run_name='l1only_8'
 
 # these make the total batch size be ~0.5M
 # 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
@@ -26,4 +26,4 @@ weight_decay = 0
 
 # regularization
 spatial_cost_scale = 0.0
-l1_scale = 4e-8
+l1_scale = 8
