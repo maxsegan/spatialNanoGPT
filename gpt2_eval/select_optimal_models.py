@@ -4,12 +4,15 @@ Select optimal models based on sparsification results and desired criteria.
 This script:
 1. Analyzes the sparsification results to identify models with optimal trade-offs
 2. Allows for filtering based on sparsity requirements, performance thresholds, and more
+3. Creates group-based Pareto front visualization for different regularization techniques
 """
 
 import os
 import pandas as pd
 import argparse
 import json
+import matplotlib.pyplot as plt
+import numpy as np
 
 # Configure argument parser
 parser = argparse.ArgumentParser(description="Select optimal sparse models based on evaluation results")
@@ -108,6 +111,80 @@ def find_pareto_frontier(df, x_col, y_col, maximize_x=True, minimize_y=True):
     # Return the Pareto optimal points
     return df_copy.iloc[pareto_indices].sort_values(by=x_col, ascending=not maximize_x)
 
+def create_group_pareto_visualization(df, output_dir):
+    """
+    Create a visualization of performance by group and sparsity level.
+    This helps visualize the Pareto front for different regularization techniques.
+    """
+    if 'group' not in df.columns:
+        print("No 'group' column found in the data. Skipping group visualization.")
+        return
+    
+    # Create a plot to show performance by group
+    plt.figure(figsize=(16, 10))
+    
+    # Convert sparsity to percentage points for x-axis
+    sparsity_ticks = [0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
+    sparsity_labels = [f"{s*100:.0f}%" for s in sparsity_ticks]
+    
+    # Get the unique groups
+    groups = df['group'].unique()
+    
+    # Define consistent markers and colors for groups
+    markers = {'L1': 's', 'Spatial': 'v', 'L1Only': '^', 'Other': 'o'}
+    colors = {'L1': 'red', 'Spatial': 'green', 'L1Only': 'blue', 'Other': 'purple'}
+    
+    # For each group, find the best model at each sparsity level
+    for group in groups:
+        group_df = df[df['group'] == group]
+        
+        # Skip if fewer than 3 data points for this group
+        if len(group_df) < 3:
+            continue
+            
+        # Get best performance at each sparsity level
+        best_at_sparsity = {}
+        for sparsity in sparsity_ticks:
+            # Find models within a small range of this sparsity level
+            tolerance = 0.025
+            sparsity_models = group_df[
+                (group_df['actual_sparsity'] >= sparsity - tolerance) & 
+                (group_df['actual_sparsity'] <= sparsity + tolerance)
+            ]
+            
+            if not sparsity_models.empty:
+                # Get the model with minimum loss at this sparsity
+                best = sparsity_models.loc[sparsity_models['val_loss'].idxmin()]
+                best_at_sparsity[sparsity] = best
+        
+        # Plot the best models for this group across sparsity levels
+        if best_at_sparsity:
+            x_values = []
+            y_values = []
+            for sparsity, row in sorted(best_at_sparsity.items()):
+                x_values.append(sparsity)
+                y_values.append(row['val_loss'])
+            
+            plt.plot(x_values, y_values, '-', 
+                     marker=markers.get(group, 'o'),
+                     color=colors.get(group, 'black'), 
+                     linewidth=2,
+                     markersize=10,
+                     label=group)
+    
+    plt.xlabel('Sparsity', fontsize=14)
+    plt.ylabel('Validation Loss', fontsize=14)
+    plt.title('Regularization Performance by Group and Sparsity', fontsize=18)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.xticks(sparsity_ticks, sparsity_labels)
+    plt.legend(fontsize=12)
+    
+    # Save the plot
+    plt.savefig(os.path.join(output_dir, 'group_pareto_front.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Group Pareto front visualization saved to {output_dir}/group_pareto_front.png")
+
 def select_optimal_models(df, min_sparsity=args.min_sparsity, max_drop=args.max_performance_drop):
     """
     Select optimal models based on sparsity and performance criteria.
@@ -152,7 +229,8 @@ def select_optimal_models(df, min_sparsity=args.min_sparsity, max_drop=args.max_
             'model_name': balanced['model_name'],
             'sparsity': balanced['actual_sparsity'],
             'val_loss': balanced['val_loss'],
-            'relative_drop': balanced['relative_drop']
+            'relative_drop': balanced['relative_drop'],
+            'group': balanced.get('group', 'Unknown') if 'group' in balanced else 'Unknown'
         }
     
     # Best performance model (within criteria)
@@ -161,7 +239,8 @@ def select_optimal_models(df, min_sparsity=args.min_sparsity, max_drop=args.max_
         'model_name': best_perf['model_name'],
         'sparsity': best_perf['actual_sparsity'],
         'val_loss': best_perf['val_loss'],
-        'relative_drop': best_perf['relative_drop']
+        'relative_drop': best_perf['relative_drop'],
+        'group': best_perf.get('group', 'Unknown') if 'group' in best_perf else 'Unknown'
     }
     
     # Highest sparsity model (within criteria)
@@ -170,13 +249,43 @@ def select_optimal_models(df, min_sparsity=args.min_sparsity, max_drop=args.max_
         'model_name': highest_sparsity['model_name'],
         'sparsity': highest_sparsity['actual_sparsity'],
         'val_loss': highest_sparsity['val_loss'],
-        'relative_drop': highest_sparsity['relative_drop']
+        'relative_drop': highest_sparsity['relative_drop'],
+        'group': highest_sparsity.get('group', 'Unknown') if 'group' in highest_sparsity else 'Unknown'
     }
     
-    # Best models at specific sparsity levels
-    sparsity_targets = [0.5, 0.7, 0.8, 0.85, 0.9]
+    # Best models by group at specific sparsity levels
+    if 'group' in acceptable_models.columns:
+        recommendations['by_group'] = {}
+        
+        sparsity_targets = [0.5, 0.7, 0.8, 0.85, 0.9]
+        groups = acceptable_models['group'].unique()
+        
+        for group in groups:
+            group_models = acceptable_models[acceptable_models['group'] == group]
+            if not group_models.empty:
+                recommendations['by_group'][group] = {}
+                
+                for target in sparsity_targets:
+                    # Find models close to this sparsity level
+                    tolerance = 0.05
+                    candidates = group_models[
+                        (group_models['actual_sparsity'] >= target - tolerance) & 
+                        (group_models['actual_sparsity'] <= target + tolerance)
+                    ]
+                    
+                    if not candidates.empty:
+                        best = candidates.loc[candidates['val_loss'].idxmin()]
+                        recommendations['by_group'][group][f"{target*100:.0f}%"] = {
+                            'model_name': best['model_name'],
+                            'sparsity': best['actual_sparsity'],
+                            'val_loss': best['val_loss'],
+                            'relative_drop': best['relative_drop']
+                        }
+    
+    # Best models at specific sparsity levels (regardless of group)
     recommendations['sparsity_targets'] = {}
     
+    sparsity_targets = [0.5, 0.7, 0.8, 0.85, 0.9]
     for target in sparsity_targets:
         # Find models close to this sparsity level
         tolerance = 0.05
@@ -191,7 +300,8 @@ def select_optimal_models(df, min_sparsity=args.min_sparsity, max_drop=args.max_
                 'model_name': best['model_name'],
                 'sparsity': best['actual_sparsity'],
                 'val_loss': best['val_loss'],
-                'relative_drop': best['relative_drop']
+                'relative_drop': best['relative_drop'],
+                'group': best.get('group', 'Unknown') if 'group' in best else 'Unknown'
             }
     
     return recommendations, pareto_models
@@ -206,6 +316,10 @@ def main():
         return
     
     print(f"Found data for {results['model_name'].nunique()} models.")
+    
+    # Create group-based visualization
+    print("Creating group-based Pareto front visualization...")
+    create_group_pareto_visualization(results, args.results_dir)
     
     # Select optimal models
     print(f"Selecting optimal models (min sparsity: {args.min_sparsity*100:.0f}%, "
@@ -230,6 +344,8 @@ def main():
         print(f"  Sparsity: {balanced['sparsity']*100:.1f}%")
         print(f"  Loss: {balanced['val_loss']:.4f}")
         print(f"  Performance Drop: {balanced['relative_drop']*100:.1f}%")
+        if 'group' in balanced:
+            print(f"  Group: {balanced['group']}")
     
     # Best performance model
     if 'best_performance' in recommendations:
@@ -238,6 +354,8 @@ def main():
         print(f"  Sparsity: {best_perf['sparsity']*100:.1f}%")
         print(f"  Loss: {best_perf['val_loss']:.4f}")
         print(f"  Performance Drop: {best_perf['relative_drop']*100:.1f}%")
+        if 'group' in best_perf:
+            print(f"  Group: {best_perf['group']}")
     
     # Highest sparsity model
     if 'highest_sparsity' in recommendations:
@@ -246,6 +364,19 @@ def main():
         print(f"  Sparsity: {highest_spar['sparsity']*100:.1f}%")
         print(f"  Loss: {highest_spar['val_loss']:.4f}")
         print(f"  Performance Drop: {highest_spar['relative_drop']*100:.1f}%")
+        if 'group' in highest_spar:
+            print(f"  Group: {highest_spar['group']}")
+    
+    # Best models by group
+    if 'by_group' in recommendations and recommendations['by_group']:
+        print("\nBest Models by Group and Sparsity Level:")
+        for group, sparsity_models in recommendations['by_group'].items():
+            print(f"\n  Group: {group}")
+            for sparsity, model in sparsity_models.items():
+                print(f"    {sparsity} Sparsity: {model['model_name']}")
+                print(f"      Actual Sparsity: {model['sparsity']*100:.1f}%")
+                print(f"      Loss: {model['val_loss']:.4f}")
+                print(f"      Performance Drop: {model['relative_drop']*100:.1f}%")
     
     # Models at specific sparsity targets
     if 'sparsity_targets' in recommendations and recommendations['sparsity_targets']:
@@ -255,6 +386,8 @@ def main():
             print(f"    Actual Sparsity: {model['sparsity']*100:.1f}%")
             print(f"    Loss: {model['val_loss']:.4f}")
             print(f"    Performance Drop: {model['relative_drop']*100:.1f}%")
+            if 'group' in model:
+                print(f"    Group: {model['group']}")
     
     # Save recommendations to JSON
     with open(args.output_file, 'w') as f:

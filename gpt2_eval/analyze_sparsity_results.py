@@ -1,317 +1,815 @@
 """
-Analyze GPT2 model sparsification results and generate comparative visualizations
-across different regularization techniques and sparsity levels.
-
+Sparsify and evaluate GPT2 models loaded from Hugging Face at different sparsity levels.
 This script:
-1. Loads results from the gpt2_sparsity_results directory
-2. Creates detailed visualizations comparing different regularization approaches
-3. Identifies the best performing models at each sparsity level
-4. Generates a summary report with key findings
+1. Loads trained GPT2 models from Hugging Face repository
+2. Filters for checkpoints that start with 'spatial' from the default repo
+3. Additionally loads a hardcoded checkpoint from maxsegan/gpt2_l1_32_100k
+4. Applies different levels of sparsity (0% to 90%)
+5. Evaluates the performance (loss) at each sparsity level
+6. Saves results to CSV files and creates visualization plots
 """
 
 import os
-import pandas as pd
+import torch
 import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
+from tqdm import tqdm
 import argparse
-import re
+import matplotlib.pyplot as plt
+from huggingface_hub import hf_hub_download, list_repo_files
+import sys
+
+# Hack city import to find the model module
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from model import GPT, GPTConfig
 
 # Configure argument parser
-parser = argparse.ArgumentParser(description="Analyze GPT2 model sparsification results")
+parser = argparse.ArgumentParser(description="Sparsify and evaluate GPT2 models from Hugging Face")
+parser.add_argument('--batch_size', type=int, default=64,
+                    help='Batch size for evaluation')
+parser.add_argument('--block_size', type=int, default=1024,
+                    help='Block size for evaluation')
+parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
+                    help='Device to run evaluation on')
 parser.add_argument('--results_dir', type=str, default='gpt2_sparsity_results',
-                    help='Directory with sparsification results')
-parser.add_argument('--output_dir', type=str, default='sparsity_analysis',
-                    help='Directory to save analysis results')
+                    help='Directory to save results')
+parser.add_argument('--force_reevaluate', action='store_true',
+                    help='Force re-evaluation of all models, even if results exist')
+parser.add_argument('--eval_iters', type=int, default=200,
+                    help='Number of iterations for evaluation')
+parser.add_argument('--data_dir', type=str, default='../data/openwebtext',
+                    help='Directory with dataset')
+parser.add_argument('--eval_subset_size', type=int, default=200,
+                    help='Number of examples to use for evaluation')
 args = parser.parse_args()
 
-# Create output directory
-os.makedirs(args.output_dir, exist_ok=True)
+args.data_dir = os.path.normpath(args.data_dir)
 
-# Function to extract model parameters from names
-def parse_model_params(model_name):
-    """Extract regularization parameters and model configuration from the name."""
-    params = {
-        'l1_scale': 0.0,
-        'spatial_scale': 0.0,
-        'weight_decay': 0.0,
-        'spatial_mode': 'fixed'
+# Create results directory
+os.makedirs(args.results_dir, exist_ok=True)
+
+# Define default repository ID
+DEFAULT_REPO_ID = 'GitWyd/SNN'
+
+# Define hardcoded checkpoints for comparison
+COMPARISON_CHECKPOINTS = [
+    {
+        'repo_id': 'maxsegan/gpt2_l1_8_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'maxsegan_gpt2_l1_8_100k',
+        'group': 'L1'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_l1_16_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'maxsegan_gpt2_l1_16_100k',
+        'group': 'L1'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_l1_32_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'maxsegan_gpt2_l1_32_100k',
+        'group': 'L1'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_l1_64_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'maxsegan_gpt2_l1_64_100k',
+        'group': 'L1'
     }
-    
-    # Extract L1 scale
-    l1_match = re.search(r'l1_(\d+\.\d+e-\d+)', model_name)
-    if l1_match:
-        params['l1_scale'] = float(l1_match.group(1))
-    
-    # Extract spatial scale
-    spatial_match = re.search(r'spatial_(\d+\.\d+e-\d+)', model_name)
-    if spatial_match:
-        params['spatial_scale'] = float(spatial_match.group(1))
-    
-    # Extract weight decay
-    wd_match = re.search(r'wd_(\d+\.\d+e-\d+)', model_name)
-    if wd_match:
-        params['weight_decay'] = float(wd_match.group(1))
-    
-    # Determine regularization type and create a more readable name
-    reg_type = 'Baseline'
-    if params['l1_scale'] > 0 and params['spatial_scale'] > 0:
-        reg_type = f"L1 ({params['l1_scale']:.0e}) + Spatial ({params['spatial_scale']:.0e})"
-    elif params['l1_scale'] > 0:
-        reg_type = f"L1 ({params['l1_scale']:.0e})"
-    elif params['spatial_scale'] > 0:
-        mode = 'learnable' if 'learnable' in model_name else 'swappable' if 'swappable' in model_name else 'fixed'
-        reg_type = f"Spatial-{mode} ({params['spatial_scale']:.0e})"
-    elif params['weight_decay'] > 0:
-        reg_type = f"Weight Decay ({params['weight_decay']:.0e})"
-    
-    params['reg_type'] = reg_type
-    
-    return params
+]
 
-# Load all results
-def load_all_results(results_dir=args.results_dir):
-    """Load all individual model results and the combined results file."""
-    all_models = []
-    combined_file = os.path.join(results_dir, 'all_gpt2_models_sparsity.csv')
+# Define sparsity levels
+sparsity_levels = [0.0, 0.25, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
+
+# Apply magnitude pruning to a model
+def apply_magnitude_pruning(model, sparsity):
+    """
+    Apply weight pruning by zeroing out the lowest magnitude weights.
+    Returns the actual sparsity achieved.
+    """
+    if sparsity <= 0.0:
+        return 0.0  # No pruning
     
-    if os.path.exists(combined_file):
-        print(f"Loading combined results from {combined_file}")
-        combined_df = pd.read_csv(combined_file)
-        return combined_df
+    # Collect all weights that should be pruned
+    all_weights = []
+    weight_tensors = []
     
-    # If combined file doesn't exist, load individual CSVs
-    print("No combined results file found. Loading individual model results...")
-    for file in os.listdir(results_dir):
-        if file.endswith('_sparsity.csv') and not file.startswith('all_'):
+    for name, param in model.named_parameters():
+        # Focus on weight matrices, not biases, layernorms, or embeddings
+        if ('weight' in name and param.dim() > 1 and 
+            not any(x in name for x in ['ln', 'layernorm', 'embed', 'wpe', 'wte'])):
+            all_weights.append(param.abs().view(-1))
+            weight_tensors.append(param)
+    
+    # Find the magnitude threshold
+    all_weights_flat = torch.cat(all_weights)
+    threshold_idx = int(sparsity * len(all_weights_flat))
+    if threshold_idx >= len(all_weights_flat):
+        threshold_idx = len(all_weights_flat) - 1
+    threshold = all_weights_flat.sort()[0][threshold_idx]
+    
+    # Apply pruning to each parameter
+    total_weights = 0
+    total_pruned = 0
+    for param in weight_tensors:
+        mask = param.abs() <= threshold
+        param.data[mask] = 0.0
+        
+        total_weights += param.numel()
+        total_pruned += mask.sum().item()
+    
+    actual_sparsity = total_pruned / total_weights if total_weights > 0 else 0.0
+    return actual_sparsity
+
+# Set up data loading
+def get_batch(split, data_dir=args.data_dir, block_size=args.block_size, batch_size=args.batch_size):
+    """Get a random batch from the dataset."""
+    try:
+        data_file = os.path.join(data_dir, f'{split}.bin')
+        if not os.path.exists(data_file):
+            raise FileNotFoundError(f"Data file {data_file} not found")
+        
+        data = np.memmap(data_file, dtype=np.uint16, mode='r')
+        ix = torch.randint(len(data) - block_size, (batch_size,))
+        x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
+        y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+        x, y = x.to(args.device), y.to(args.device)
+        return x, y
+    except Exception as e:
+        print(f"Error preparing real data: {str(e)}")
+
+        return None, None
+
+def create_fixed_batches(n_batches=args.eval_iters):
+    """Create fixed batches for consistent evaluation."""
+    fixed_batches = []
+    for i in range(n_batches):
+        try:
+            x, y = get_batch('val')
+            fixed_batches.append((x, y))
+        except Exception as e:
+            print(f"Error creating batch {i}: {str(e)}")
+    return fixed_batches
+
+# Function to compute loss using the model
+@torch.no_grad()
+def estimate_loss(model, fixed_batches):
+    """Estimate model loss on validation data using fixed batches."""
+    model.eval()
+    batch_count = len(fixed_batches)
+    losses = torch.zeros(batch_count, device=args.device)
+    
+    # Process each batch
+    for i, (x, y) in enumerate(fixed_batches):
+        print("batch #", i)
+        # Forward pass with your custom GPT model
+        logits, loss = model(x, y)
+        losses[i] = loss
+    
+    return losses.mean().item()
+
+# Find checkpoint files in the Hugging Face repository
+def find_checkpoints():
+    """Find and download checkpoint files from the Hugging Face repository."""
+    checkpoints = []
+    
+    try:
+        # First, get spatial checkpoints from default repo
+        print(f"Finding 'spatial' checkpoints in {DEFAULT_REPO_ID}...")
+        all_files = list_repo_files(DEFAULT_REPO_ID)
+        
+        # Filter for spatial checkpoint files in the root directory
+        for file_path in all_files:
+            # Check if file is in root directory (no '/' in the path except potentially at the beginning)
+            if '/' not in file_path.strip('/') and file_path.endswith('.pt'):
+                # Check if filename starts with spatial
+                filename = os.path.basename(file_path)
+                if filename.startswith('spatial'):
+                    # fixed isn't a prefix so it's just easier to write a hack
+                    if not 'fixedckpt' in filename:
+                        continue
+                    # Okay this is weird but we have dup checkpoints, and this is a hacky but workable way to dedup the way we want
+                    if '3057' not in filename and '30638' not in filename:
+                        continue
+                    
+                    try:
+                        local_file = hf_hub_download(repo_id=DEFAULT_REPO_ID, filename=file_path)
+                        model_name = os.path.splitext(os.path.basename(file_path))[0]
+                        checkpoints.append({
+                            'name': model_name,
+                            'checkpoint_path': local_file,
+                            'group': 'Spatial'
+                        })
+                    except Exception as e:
+                        print(f"Error processing {file_path}: {str(e)}")
+                        continue
+        
+        # Now add hardcoded comparison checkpoints
+        print(f"Adding {len(COMPARISON_CHECKPOINTS)} hardcoded comparison checkpoints...")
+        for ckpt in COMPARISON_CHECKPOINTS:
             try:
-                file_path = os.path.join(results_dir, file)
-                df = pd.read_csv(file_path)
-                all_models.append(df)
+                local_file = hf_hub_download(repo_id=ckpt['repo_id'], filename=ckpt['filename'])
+                checkpoints.append({
+                    'name': ckpt['name'],
+                    'checkpoint_path': local_file,
+                    'group': ckpt.get('group', 'Other')  # Use the group from checkpoint config or default to "Other"
+                })
             except Exception as e:
-                print(f"Error loading {file}: {str(e)}")
+                print(f"Error downloading checkpoint from {ckpt['repo_id']}: {str(e)}")
                 continue
+        
+        print(f"Found total of {len(checkpoints)} checkpoints for evaluation")
+        for ckpt in checkpoints:
+            print(f"  - {ckpt['name']} (Group: {ckpt['group']})")
+        
+        return checkpoints
     
-    if not all_models:
-        print("No results found. Please run the sparsification script first.")
-        return None
+    except Exception as e:
+        print(f"Error accessing Hugging Face repositories: {str(e)}")
+        return []
+
+# Check for existing evaluation results
+def check_existing_results(model_name, results_dir=args.results_dir):
+    """Check if evaluation results already exist for this model and identify missing sparsity levels."""
+    csv_path = os.path.join(results_dir, f"{model_name}_sparsity.csv")
+    if os.path.exists(csv_path):
+        try:
+            # Load the CSV and check which sparsity levels need evaluation
+            df = pd.read_csv(csv_path)
+            existing_sparsity = df['target_sparsity'].values
+            
+            # Find missing sparsity levels with tolerance for floating point issues
+            tolerance = 0.001  # Tolerance for floating point comparison
+            missing_sparsity = []
+            
+            for target in sparsity_levels:
+                # Check if any existing sparsity level is close to this target
+                if not any(abs(existing - target) <= tolerance for existing in existing_sparsity):
+                    missing_sparsity.append(target)
+            
+            if not missing_sparsity:
+                print(f"Found complete results for {model_name}")
+                return df, []
+            else:
+                # Format missing levels for cleaner output
+                missing_formatted = [f"{s:.2f}" for s in missing_sparsity]
+                print(f"Found partial results for {model_name}, missing sparsity levels: {', '.join(missing_formatted)}")
+                return df, missing_sparsity
+        except Exception as e:
+            print(f"Error reading existing results for {model_name}: {str(e)}")
+            return None, sparsity_levels
+    return None, sparsity_levels
+
+# Load combined results file
+def load_combined_results(results_dir=args.results_dir):
+    """Load the combined results file if it exists."""
+    combined_csv = os.path.join(results_dir, "all_gpt2_models_sparsity.csv")
+    if os.path.exists(combined_csv):
+        try:
+            return pd.read_csv(combined_csv)
+        except Exception as e:
+            print(f"Error reading combined results: {str(e)}")
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+# Update combined results with new model results
+def update_combined_results(new_results, existing_results=None, results_dir=args.results_dir):
+    """Update the combined results with new model results."""
+    if existing_results is None or existing_results.empty:
+        # Just write the new results
+        new_results.to_csv(os.path.join(results_dir, "all_gpt2_models_sparsity.csv"), index=False)
+        return new_results
     
-    # Combine all dataframes
-    combined_df = pd.concat(all_models, ignore_index=True)
+    # Check if the model already exists in the combined results
+    model_name = new_results['model_name'].iloc[0]
+    combined_df = existing_results.copy()
+    
+    # Remove existing entries for this model if they exist
+    if model_name in existing_results['model_name'].values:
+        combined_df = combined_df[combined_df['model_name'] != model_name]
+    
+    # Append the new results
+    combined_df = pd.concat([combined_df, new_results], ignore_index=True)
+    
+    # Write the updated combined results
+    combined_df.to_csv(os.path.join(results_dir, "all_gpt2_models_sparsity.csv"), index=False)
     return combined_df
 
-# Add regularization type and other metadata to results
-def enrich_results(df):
-    """Add metadata like regularization type to the results dataframe."""
-    if df is None or df.empty:
-        return None
+def load_model_from_checkpoint(checkpoint_path, device=args.device):
+    """Load a model from a checkpoint file with support for your custom GPT implementation."""
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint not found: {checkpoint_path}")
+        return None, None
     
-    # Add regularization info based on model name
-    enriched = []
-    for _, row in df.iterrows():
-        model_name = row['model_name']
-        params = parse_model_params(model_name)
+    try:
+        # Load the checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location=device)
         
-        # Add parameters to row
-        new_row = row.to_dict()
-        new_row['reg_type'] = params['reg_type']
+        # Determine if this is a HuggingFace standard PyTorch model
+        is_huggingface_model = os.path.basename(checkpoint_path) == 'pytorch_model.bin'
         
-        # Create a more readable model name for plots
-        l1_str = f"L1={params['l1_scale']:.0e}" if params['l1_scale'] > 0 else ""
-        spatial_str = f"Sp={params['spatial_scale']:.0e}" if params['spatial_scale'] > 0 else ""
-        wd_str = f"WD={params['weight_decay']:.0e}" if params['weight_decay'] > 0 else ""
-        
-        components = [s for s in [l1_str, spatial_str, wd_str] if s]
-        if components:
-            readable_name = " ".join(components)
-        else:
-            readable_name = "Baseline"
-        
-        if 'learnable' in model_name:
-            readable_name += " (Learn)"
-        elif 'swappable' in model_name:
-            readable_name += " (Swap)"
+        # Extract model configuration if available
+        if isinstance(checkpoint, dict) and 'model_args' in checkpoint:
+            # Handle custom checkpoint format
+            model_args = checkpoint['model_args']
             
-        new_row['readable_name'] = readable_name
-        enriched.append(new_row)
-    
-    return pd.DataFrame(enriched)
-
-
-def generate_best_per_group_comparison(enriched_results, output_dir=args.output_dir):
-    """
-    Generate a comparison plot showing the best performing model from each group
-    at each sparsity level.
-    """
-    if enriched_results is None or enriched_results.empty:
-        print("No results available to generate comparison")
-        return
-    
-    # Define the correct groups for your current project
-    groups = {
-        'Baseline': ['gpt2'],
-        'L1': ['l1_'],
-        'L1Only': ['l1only'],
-        'Spatial': ['spatial']
-    }
-    
-    # Define the standard sparsity levels to plot
-    plot_sparsity_levels = [0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
-    
-    # Prepare data for plotting
-    plot_data = {}
-    
-    # For each group, find the best model at each sparsity level
-    for group_name, prefixes in groups.items():
-        plot_data[group_name] = {'sparsity': [], 'loss': []}
-        
-        # For each sparsity level
-        for target_sparsity in plot_sparsity_levels:
-            # Find models that match this group and have sparsity close to target
-            tolerance = 0.025  # Adjust as needed
+            # Create the model using your GPT implementation
+            config = GPTConfig(**model_args)
+            model = GPT(config)
             
-            group_models = pd.DataFrame()
-            for prefix in prefixes:
-                # Check if any model name starts with this prefix
-                models_with_prefix = enriched_results[enriched_results['model_name'].str.contains(prefix, regex=False)]
-                group_models = pd.concat([group_models, models_with_prefix])
-            
-            if group_models.empty:
-                continue
+            # Load the state dict
+            if 'model' in checkpoint:
+                model.load_state_dict(checkpoint['model'])
+            else:
+                # If 'model' key doesn't exist, try to load directly
+                print("No 'model' key found in checkpoint, attempting to load state_dict directly")
+                model.load_state_dict(checkpoint)
                 
-            # Find models at this sparsity level
-            sparsity_models = group_models[
-                (group_models['actual_sparsity'] >= target_sparsity - tolerance) & 
-                (group_models['actual_sparsity'] <= target_sparsity + tolerance)
-            ]
+            model.to(device)
+            model.eval()
             
-            if sparsity_models.empty:
-                continue
+            # Extract regularization parameters if available
+            print(f"Best validation loss for this model: {checkpoint.get('best_val_loss', 0.0):.4f}")
+            regularization = checkpoint.get('regularization', {})
+            l1_scale = regularization.get('l1_scale', 0.0)
+            weight_decay = regularization.get('weight_decay', 0.0)
+            spatial_cost_scale = regularization.get('spatial_cost_scale', 0.0)
             
-            # Find the best model (lowest loss)
-            best_model = sparsity_models.loc[sparsity_models['val_loss'].idxmin()]
+            return model, {'l1_scale': l1_scale, 'weight_decay': weight_decay, 'spatial_cost_scale': spatial_cost_scale}
+        
+        # If model_args isn't available, try to infer configuration from the checkpoint structure
+        elif isinstance(checkpoint, dict) and 'model' in checkpoint:
+            # Extract model hyperparameters from state dict if possible
+            state_dict = checkpoint['model']
             
-            # Add to plot data
-            plot_data[group_name]['sparsity'].append(best_model['actual_sparsity'])
-            plot_data[group_name]['loss'].append(best_model['val_loss'])
-    
-    # Create the plot
-    plt.figure(figsize=(14, 10))
-    
-    # Plot each group
-    markers = ['o', 's', '^', 'v']
-    colors = ['black', 'red', 'blue', 'green']
-    
-    for i, (group_name, data) in enumerate(plot_data.items()):
-        if len(data['sparsity']) > 0:
-            # Sort by sparsity for clean lines
-            sparsity_values = np.array(data['sparsity'])
-            loss_values = np.array(data['loss'])
-            sorted_indices = np.argsort(sparsity_values)
+            # Try to determine model configuration from state dict
+            # Example: look at embedding dimension from wte weight
+            if 'transformer.wte.weight' in state_dict:
+                vocab_size, n_embd = state_dict['transformer.wte.weight'].shape
+                
+                # Look at number of layers by finding the highest layer index
+                n_layer = 0
+                for key in state_dict:
+                    if 'transformer.h.' in key:
+                        layer_idx = int(key.split('.')[2])
+                        n_layer = max(n_layer, layer_idx + 1)
+                
+                # Estimate n_head from layer 0 attention matrix
+                if 'transformer.h.0.attn.c_attn.weight' in state_dict:
+                    _, attn_dim = state_dict['transformer.h.0.attn.c_attn.weight'].shape
+                    n_head = n_embd // 64  # Assuming head size of 64
+                else:
+                    n_head = 12  # Default for GPT2
+                
+                print(f"Inferring model config: n_layer={n_layer}, n_head={n_head}, n_embd={n_embd}, vocab_size={vocab_size}")
+                
+                # Create model with inferred config
+                config = GPTConfig(n_layer=n_layer, n_head=n_head, n_embd=n_embd, 
+                                  vocab_size=vocab_size, block_size=args.block_size)
+                model = GPT(config)
+                
+                # Attempt to load the state dict
+                try:
+                    model.load_state_dict(state_dict)
+                except Exception as e:
+                    print(f"Error loading state dict: {str(e)}")
+                    print("Attempting to load with strict=False")
+                    model.load_state_dict(state_dict, strict=False)
+                
+                model.to(device)
+                model.eval()
+                
+                # Extract regularization parameters if available
+                regularization = checkpoint.get('regularization', {})
+                l1_scale = regularization.get('l1_scale', 0.0)
+                weight_decay = regularization.get('weight_decay', 0.0)
+                spatial_cost_scale = regularization.get('spatial_cost_scale', 0.0)
+                
+                return model, {'l1_scale': l1_scale, 'weight_decay': weight_decay, 'spatial_cost_scale': spatial_cost_scale}
+        
+        # Handle HuggingFace standard PyTorch model format - direct state dict
+        elif is_huggingface_model:
+            print("Loading HuggingFace standard PyTorch model")
             
-            x = sparsity_values[sorted_indices]
-            y = loss_values[sorted_indices]
+            # For HuggingFace models, try to load config.json from the same repo
+            repo_id = None
+            for ckpt in COMPARISON_CHECKPOINTS:
+                if os.path.basename(checkpoint_path) == os.path.basename(ckpt['filename']) and 'maxsegan' in ckpt['repo_id']:
+                    repo_id = ckpt['repo_id']
+                    break
             
-            marker = markers[i % len(markers)]
-            color = colors[i % len(colors)]
-            plt.plot(x, y, '-' + marker, linewidth=2, markersize=8, 
-                     label=group_name, color=color)
+            model_config = None
+            if repo_id:
+                try:
+                    # Try to download and load config.json
+                    config_file = hf_hub_download(repo_id=repo_id, filename='config.json')
+                    with open(config_file, 'r') as f:
+                        import json
+                        model_config = json.load(f)
+                    print(f"Loaded model config from {repo_id}/config.json")
+                except Exception as e:
+                    print(f"Could not load config.json: {str(e)}")
+            
+            # If we have a config file, use it to create the model
+            if model_config:
+                # Use GPT-2 default configuration, with appropriate adjustments
+                n_layer = model_config.get('n_layer', 12)
+                n_head = model_config.get('n_head', 12)
+                n_embd = model_config.get('n_embd', 768)
+                vocab_size = model_config.get('vocab_size', 50257)
+                
+                print(f"Using config from config.json: n_layer={n_layer}, n_head={n_head}, n_embd={n_embd}, vocab_size={vocab_size}")
+            else:
+                # Try to infer from state dict
+                if isinstance(checkpoint, dict):
+                    # Try to determine config from state dict keys and shapes
+                    wte_key = next((k for k in checkpoint.keys() if 'wte.weight' in k), None)
+                    if wte_key:
+                        vocab_size, n_embd = checkpoint[wte_key].shape
+                    else:
+                        # Default GPT-2 small config
+                        vocab_size, n_embd = 50257, 768
+                    
+                    # Count layers by scanning for layer indices
+                    n_layer = 0
+                    for key in checkpoint.keys():
+                        if '.h.' in key or '.transformer.h.' in key:
+                            parts = key.split('.')
+                            for i, part in enumerate(parts):
+                                if part == 'h' and i + 1 < len(parts) and parts[i+1].isdigit():
+                                    layer_idx = int(parts[i+1])
+                                    n_layer = max(n_layer, layer_idx + 1)
+                    
+                    if n_layer == 0:  # If no layers found, use default
+                        n_layer = 12
+                    
+                    # Default GPT-2 head config
+                    n_head = 12
+                    
+                    print(f"Inferring model config from state dict: n_layer={n_layer}, n_head={n_head}, n_embd={n_embd}, vocab_size={vocab_size}")
+                else:
+                    # Complete fallback to default GPT-2 small config
+                    n_layer, n_head, n_embd, vocab_size = 12, 12, 768, 50257
+                    print(f"Using default GPT-2 small config: n_layer={n_layer}, n_head={n_head}, n_embd={n_embd}, vocab_size={vocab_size}")
+            
+            # Create model with inferred or default config
+            config = GPTConfig(n_layer=n_layer, n_head=n_head, n_embd=n_embd, 
+                              vocab_size=vocab_size, block_size=args.block_size)
+            model = GPT(config)
+            
+            # Try to adapt HuggingFace state dict to our model format
+            try:
+                # If checkpoint is a state dict with HF-style keys, try mapping the keys
+                hf_state_dict = checkpoint
+                our_state_dict = {}
+                
+                # Map HuggingFace keys to our model keys
+                key_mapping = {
+                    # This is a rough mapping, may need adjustment
+                    'transformer.wte.weight': 'transformer.wte.weight',
+                    'transformer.wpe.weight': 'transformer.wpe.weight',
+                    'transformer.ln_f.weight': 'transformer.ln_f.weight',
+                    'transformer.ln_f.bias': 'transformer.ln_f.bias',
+                    'lm_head.weight': 'lm_head.weight',
+                }
+                
+                # Layer-specific mappings
+                for i in range(n_layer):
+                    layer_map = {
+                        f'transformer.h.{i}.ln_1.weight': f'transformer.h.{i}.ln_1.weight',
+                        f'transformer.h.{i}.ln_1.bias': f'transformer.h.{i}.ln_1.bias',
+                        f'transformer.h.{i}.ln_2.weight': f'transformer.h.{i}.ln_2.weight',
+                        f'transformer.h.{i}.ln_2.bias': f'transformer.h.{i}.ln_2.bias',
+                        f'transformer.h.{i}.attn.c_attn.weight': f'transformer.h.{i}.attn.c_attn.weight',
+                        f'transformer.h.{i}.attn.c_attn.bias': f'transformer.h.{i}.attn.c_attn.bias',
+                        f'transformer.h.{i}.attn.c_proj.weight': f'transformer.h.{i}.attn.c_proj.weight',
+                        f'transformer.h.{i}.attn.c_proj.bias': f'transformer.h.{i}.attn.c_proj.bias',
+                        f'transformer.h.{i}.mlp.c_fc.weight': f'transformer.h.{i}.mlp.c_fc.weight',
+                        f'transformer.h.{i}.mlp.c_fc.bias': f'transformer.h.{i}.mlp.c_fc.bias',
+                        f'transformer.h.{i}.mlp.c_proj.weight': f'transformer.h.{i}.mlp.c_proj.weight',
+                        f'transformer.h.{i}.mlp.c_proj.bias': f'transformer.h.{i}.mlp.c_proj.bias',
+                    }
+                    key_mapping.update(layer_map)
+                
+                # Create a state dict for our model format
+                for hf_key, our_key in key_mapping.items():
+                    if hf_key in hf_state_dict:
+                        our_state_dict[our_key] = hf_state_dict[hf_key]
+                    elif our_key in hf_state_dict:  # Already in our format
+                        our_state_dict[our_key] = hf_state_dict[our_key]
+                
+            # For HF models, other keys might need different prefix mapping
+                for key in hf_state_dict:
+                    if key not in our_state_dict.keys() and key not in [v for k, v in key_mapping.items()]:
+                        # Try to map additional keys
+                        if 'transformer.' in key:
+                            our_state_dict[key] = hf_state_dict[key]
+                
+                # Initialize missing bias terms with zeros if needed
+                model_state_dict = model.state_dict()
+                for key in model_state_dict:
+                    if key not in our_state_dict and '.bias' in key:
+                        print(f"Initializing missing bias term: {key}")
+                        our_state_dict[key] = torch.zeros_like(model_state_dict[key])
+                
+                # Try to load the remapped state dict
+                try:
+                    model.load_state_dict(our_state_dict)
+                except Exception as e:
+                    print(f"Error loading remapped state dict: {str(e)}")
+                    print("Attempting to load with strict=False")
+                    model.load_state_dict(our_state_dict, strict=False)
+                
+                model.to(device)
+                model.eval()
+                
+                # For HF models, we don't have regularization info, use defaults
+                l1_scale = 0.0
+                if 'l1_' in os.path.basename(checkpoint_path) or any('l1_' in ckpt['repo_id'] for ckpt in COMPARISON_CHECKPOINTS if ckpt['filename'] == os.path.basename(checkpoint_path)):
+                    # Extract L1 scale from the repo name if possible
+                    for ckpt in COMPARISON_CHECKPOINTS:
+                        if ckpt['filename'] == os.path.basename(checkpoint_path):
+                            repo_parts = ckpt['repo_id'].split('/')[-1].split('_')
+                            for i, part in enumerate(repo_parts):
+                                if part == 'l1' and i + 1 < len(repo_parts) and repo_parts[i+1].isdigit():
+                                    l1_scale = int(repo_parts[i+1]) / 100.0  # Assuming format like l1_32 means 0.32
+                                    print(f"Extracted l1_scale={l1_scale} from repo name")
+                                    break
+                
+                return model, {'l1_scale': l1_scale, 'weight_decay': 0.0, 'spatial_cost_scale': 0.0}
+                
+            except Exception as e:
+                print(f"Error adapting HuggingFace model: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return None, None
+            
+        else:
+            print("Unsupported checkpoint format")
+            return None, None
+                
+    except Exception as e:
+        print(f"Error loading model from {checkpoint_path}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None, None
     
-    # Customize the plot
-    plt.xlabel('Sparsity', fontsize=12)
-    plt.ylabel('Validation Loss', fontsize=12)
-    plt.title('Regularization Performance by Group and Sparsity', fontsize=14)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(fontsize=10)
-    
-    # Format x-axis as percentages
-    plt.gca().xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.0%}'))
-    
-    # Add specific sparsity ticks
-    plt.xticks([0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9])
-    
-    # Save the plot
-    output_path = os.path.join(output_dir, 'regularization_comparison_by_group.png')
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"Generated group comparison plot at {output_path}")
-
-
-# Find best models at each sparsity level
-def identify_best_models(df):
-    """Identify the best performing models at each sparsity level."""
-    if df is None or df.empty:
-        return None
-    
-    # Define standard sparsity levels
-    sparsity_levels = [0.0, 0.25, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
-    results = []
-    
-    for target in sparsity_levels:
-        # Find models with actual sparsity close to target
-        tolerance = 0.05
-        models = df[(df['actual_sparsity'] >= target - tolerance) & 
-                    (df['actual_sparsity'] <= target + tolerance)]
+def inspect_checkpoint(checkpoint_path):
+    """Analyze the structure of a checkpoint file to help debug loading issues."""
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
         
-        if models.empty:
-            continue
+        print(f"\nCheckpoint inspection for {os.path.basename(checkpoint_path)}:")
         
-        # Find best model (lowest loss)
-        best_model = models.loc[models['val_loss'].idxmin()]
+        if isinstance(checkpoint, dict):
+            print(f"Checkpoint is a dictionary with {len(checkpoint)} keys")
+            print(f"Top-level keys: {list(checkpoint.keys())}")
+            
+            # Check for model weights
+            if 'model' in checkpoint:
+                model_dict = checkpoint['model']
+                print(f"Found 'model' key with {len(model_dict)} parameters")
+                
+                # Sample some keys and shapes
+                sample_keys = list(model_dict.keys())[:5]
+                print("Sample keys and shapes:")
+                for k in sample_keys:
+                    if isinstance(model_dict[k], torch.Tensor):
+                        print(f"  {k}: {model_dict[k].shape}")
+            
+            # Check for other common keys
+            for key in ['state_dict', 'config', 'model_args', 'regularization']:
+                if key in checkpoint:
+                    if key in ['config', 'model_args', 'regularization']:
+                        print(f"Found '{key}': {checkpoint[key]}")
+                    else:
+                        print(f"Found '{key}' with {len(checkpoint[key])} items")
+        else:
+            print("Checkpoint is not a dictionary, may be a direct state dict")
+            
+            # If it's a state dict
+            if hasattr(checkpoint, 'keys'):
+                print(f"Checkpoint has {len(checkpoint)} keys")
+                sample_keys = list(checkpoint.keys())[:5]
+                print("Sample keys:")
+                for k in sample_keys:
+                    if isinstance(checkpoint[k], torch.Tensor):
+                        print(f"  {k}: {checkpoint[k].shape}")
         
-        # Check if required columns exist in the dataframe
-        required_columns = ['val_loss', 'l1_scale', 'spatial_cost_scale', 'weight_decay']
-        missing_columns = [col for col in required_columns if col not in best_model.index]
-        
-        # Create result dict with available columns
-        result = {
-            'sparsity_level': target,
-            'actual_sparsity': best_model['actual_sparsity'],
-            'best_model': best_model['readable_name'],
-            'val_loss': best_model['val_loss']
-        }
-        
-        # Add regularization parameters if they exist
-        if 'l1_scale' in best_model:
-            result['l1_scale'] = best_model['l1_scale']
-        if 'spatial_cost_scale' in best_model:
-            result['spatial_cost_scale'] = best_model['spatial_cost_scale'] 
-        if 'weight_decay' in best_model:
-            result['weight_decay'] = best_model['weight_decay']
-        
-        results.append(result)
-    
-    return pd.DataFrame(results)
-
+        return True
+    except Exception as e:
+        print(f"Error inspecting checkpoint: {str(e)}")
+        return False
 
 def main():
-    print(f"Loading results from {args.results_dir}...")
-    
-    # Load and process results
-    results = load_all_results()
-    if results is None or results.empty:
-        print("No results found to analyze.")
+    # Prepare evaluation data - create fixed batches for consistent evaluation
+    print("Creating fixed validation batches...")
+    try:
+        fixed_batches = create_fixed_batches()
+    except Exception as e:
+        print(f"Error creating fixed batches: {str(e)}")
         return
     
-    # Enrich with metadata
-    enriched_results = enrich_results(results)
-    if enriched_results is None:
-        print("Error processing results.")
+    # Load existing combined results
+    combined_results = load_combined_results()
+    if not combined_results.empty:
+        print(f"Loaded existing results for {combined_results['model_name'].nunique()} models")
+    
+    # Find all checkpoints in the HF repository
+    print("Finding checkpoints...")
+    checkpoints = find_checkpoints()
+    
+    if not checkpoints:
+        print("No checkpoints found. Exiting.")
         return
     
-    print(f"Analyzing {enriched_results['model_name'].nunique()} models...")
+    # Filtered checkpoints to only process new ones or missing sparsity levels
+    models_to_process = []
+    
+    for ckpt_info in checkpoints:
+        model_name = ckpt_info['name']
+        
+        if args.force_reevaluate:
+            ckpt_info['missing_sparsity'] = sparsity_levels
+            models_to_process.append(ckpt_info)
+            continue
+        
+        # Check if we already have results for this model and what sparsity levels are missing
+        existing_results, missing_sparsity = check_existing_results(model_name)
+        
+        if existing_results is not None:
+            # Update combined results with existing data
+            combined_results = update_combined_results(existing_results, combined_results)
+            
+            # If there are missing sparsity levels to evaluate, add to processing list
+            if missing_sparsity:
+                ckpt_info['existing_results'] = existing_results
+                ckpt_info['missing_sparsity'] = missing_sparsity
+                models_to_process.append(ckpt_info)
+        else:
+            # No existing results, process all sparsity levels
+            ckpt_info['missing_sparsity'] = sparsity_levels
+            models_to_process.append(ckpt_info)
 
-    print("Generating comparison plot of best models by group...")
-    generate_best_per_group_comparison(enriched_results)
+    print(f"Will process {len(models_to_process)} models")
     
-    # Generate and save best models list
-    best_models = identify_best_models(enriched_results)
-    if best_models is not None:
-        best_models_path = os.path.join(args.output_dir, 'best_models_by_sparsity.csv')
-        best_models.to_csv(best_models_path, index=False)
-        print(f"Saved best models list to {best_models_path}")
+    # Process each model
+    for ckpt_info in tqdm(models_to_process, desc="Processing models"):
+        checkpoint_path = ckpt_info['checkpoint_path']
+        model_name = ckpt_info['name']
+        missing_sparsity = ckpt_info['missing_sparsity']
+
+        print(f"\nInspecting and evaluating {model_name}...")
     
-    print(f"Analysis complete! Results saved to {args.output_dir}")
+        # First inspect the checkpoint
+        inspect_checkpoint(checkpoint_path)
+        
+        print(f"\nEvaluating {model_name} at {len(missing_sparsity)} missing sparsity levels...")
+        
+        # Get existing results or create empty results list
+        if 'existing_results' in ckpt_info:
+            model_results = ckpt_info['existing_results'].to_dict('records')
+        else:
+            model_results = []
+        
+        # Evaluate at each missing sparsity level
+        for target_sparsity in tqdm(missing_sparsity, desc=f"Sparsity levels for {model_name}"):
+            try:
+                # Load a fresh model for this sparsity level
+                model, regularization = load_model_from_checkpoint(checkpoint_path)
+                
+                if model is None:
+                    print(f"Skipping sparsity {target_sparsity} for {model_name} due to loading error")
+                    continue
+                
+                # Get regularization parameters
+                l1_scale = regularization.get('l1_scale', 0.0)
+                weight_decay = regularization.get('weight_decay', 0.0)
+                spatial_cost_scale = regularization.get('spatial_cost_scale', 0.0)
+                
+                # Apply pruning
+                actual_sparsity = apply_magnitude_pruning(model, target_sparsity)
+                
+                # Evaluate the model using our fixed batches
+                loss = estimate_loss(model, fixed_batches)
+                
+                # Store results
+                result = {
+                    'model_name': model_name,
+                    'target_sparsity': target_sparsity,
+                    'actual_sparsity': actual_sparsity,
+                    'val_loss': loss,
+                    'l1_scale': l1_scale,
+                    'weight_decay': weight_decay,
+                    'spatial_cost_scale': spatial_cost_scale,
+                    'group': next((ckpt.get('group', 'Other') for ckpt in checkpoints if ckpt['name'] == model_name), 'Other')
+                }
+                model_results.append(result)
+                
+                # Output progress
+                print(f"Sparsity {target_sparsity*100:.1f}% → {actual_sparsity*100:.1f}%: Loss = {loss:.6f}")
+                
+                # Free up memory
+                del model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    
+            except Exception as e:
+                print(f"Error evaluating {model_name} at sparsity {target_sparsity}: {str(e)}")
+                continue
+    
+        # Save individual model results
+        if model_results:
+            model_df = pd.DataFrame(model_results)
+            model_csv_path = os.path.join(args.results_dir, f"{model_name}_sparsity.csv")
+            model_df.to_csv(model_csv_path, index=False)
+            print(f"Results for {model_name} saved to {model_csv_path}")
+            
+            # Update combined results
+            combined_results = update_combined_results(model_df, combined_results)
+            
+            # Plot sparsity vs. loss for this model
+            try:
+                plt.figure(figsize=(10, 6))
+                
+                # Sort by sparsity for cleaner plots
+                model_df = model_df.sort_values('actual_sparsity')
+                
+                # Plot loss
+                plt.plot(model_df['actual_sparsity'], model_df['val_loss'], 'o-', color='blue')
+                plt.xlabel('Sparsity')
+                plt.ylabel('Validation Loss')
+                plt.title(f'Sparsity vs. Loss for {model_name}')
+                
+                # Add grid and title
+                plt.grid(True, alpha=0.3)
+                
+                # Save plot
+                plt_path = os.path.join(args.results_dir, f"{model_name}_sparsity.png")
+                plt.savefig(plt_path)
+                plt.close()
+            except Exception as e:
+                print(f"Error creating plot for {model_name}: {str(e)}")
+    
+    # Create comparison plots of all models (if we have combined results)
+    if not combined_results.empty:
+        try:
+            # Plot for loss - comparison by individual model
+            plt.figure(figsize=(12, 8))
+            
+            # Plot each model as a separate line
+            for model_name in combined_results['model_name'].unique():
+                model_data = combined_results[combined_results['model_name'] == model_name]
+                model_data = model_data.sort_values('actual_sparsity')  # Sort for cleaner lines
+                plt.plot(model_data['actual_sparsity'], model_data['val_loss'], 'o-', label=model_name)
+            
+            plt.xlabel('Sparsity')
+            plt.ylabel('Validation Loss')
+            plt.title('Sparsity vs. Loss for All Models')
+            plt.grid(True, alpha=0.3)
+            plt.legend(loc='best', fontsize='small')
+            plt_path = os.path.join(args.results_dir, "all_models_loss_comparison.png")
+            plt.savefig(plt_path)
+            plt.close()
+            
+            # Plot for loss - comparison by group (for Pareto front visualization)
+            plt.figure(figsize=(12, 8))
+            
+            # Get unique groups
+            if 'group' in combined_results.columns:
+                groups = combined_results['group'].unique()
+                
+                # Color map for consistent colors per group
+                import matplotlib.cm as cm
+                colors = cm.tab10(np.linspace(0, 1, len(groups)))
+                
+                # Plot each group with distinct color and marker
+                for i, group in enumerate(groups):
+                    group_data = combined_results[combined_results['group'] == group]
+                    
+                    # For each model in the group
+                    for model_name in group_data['model_name'].unique():
+                        model_data = group_data[group_data['model_name'] == model_name]
+                        model_data = model_data.sort_values('actual_sparsity')
+                        
+                        # Use same color for all models in group but different markers or line styles
+                        plt.plot(model_data['actual_sparsity'], model_data['val_loss'], 'o-', 
+                                 color=colors[i], label=f"{model_name} ({group})" if i == 0 else model_name)
+                
+                plt.xlabel('Sparsity')
+                plt.ylabel('Validation Loss')
+                plt.title('Sparsity vs. Loss by Model Groups')
+                plt.grid(True, alpha=0.3)
+                plt.legend(loc='best', fontsize='small')
+                plt_path = os.path.join(args.results_dir, "model_groups_pareto_front.png")
+                plt.savefig(plt_path)
+                plt.close()
+            
+        except Exception as e:
+            print(f"Error creating comparison plots: {str(e)}")
+    
+    print("Evaluation complete!")
 
 if __name__ == '__main__':
     main()
