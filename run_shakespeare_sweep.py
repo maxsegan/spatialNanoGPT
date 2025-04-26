@@ -48,11 +48,11 @@ HYPERPARAMS = {
     
     "L1_Spatial": [{"l1_scale": l1, "weight_decay": 0.0, "spatial_cost_scale": spatial} 
                    for l1 in [1, 4, 16, 32, 128] 
-                   for spatial in [5, 10, 40, 100, 250, 400, 750, 1000, 1500, 2000]],
+                   for spatial in [5, 10, 40, 100, 250]],
     
     "L2_Spatial": [{"l1_scale": 0.0, "weight_decay": l2, "spatial_cost_scale": spatial} 
                    for l2 in [0.1, 0.4, 1, 2.5, 5] 
-                   for spatial in [5, 10, 40, 100, 250, 400, 750, 1000, 1500, 2000]],
+                   for spatial in [5, 10, 40, 100, 250]],
     
     "L1_L2": [{"l1_scale": l1, "weight_decay": l2, "spatial_cost_scale": 0.0} 
               for l1 in [1, 4, 16, 32, 128] 
@@ -61,11 +61,11 @@ HYPERPARAMS = {
     "All": [{"l1_scale": l1, "weight_decay": l2, "spatial_cost_scale": spatial} 
             for l1 in [1, 4, 16, 32, 128] 
             for l2 in [0.1, 0.4, 1, 2.5, 5] 
-            for spatial in [5, 10, 40, 100, 250, 400, 750, 1000, 1500, 2000]],
+            for spatial in [5, 10, 40, 100]],
 
     "2DSpatial": [{"l1_scale": 0.0, "weight_decay": 0.0, "spatial_cost_scale": spatial, "spatial_d_value": d} 
-                 for spatial in [5, 10, 40, 100, 250, 400, 750, 1000, 1500, 2000]
-                 for d in [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]]
+                 for spatial in [5, 10, 40, 100, 250, 400]
+                 for d in [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 2.0, 4.0, 10.0, 20.0, 40.0, 80.0]]
 }
 
 def create_directories():
