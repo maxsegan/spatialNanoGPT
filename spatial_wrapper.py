@@ -87,9 +87,8 @@ class SpatialNet(nn.Module):
     This class wraps a GPT model from nanoGPT and adds a spatialized cost term.
 
     It finds all linear layers in the model (including those inside the MLP and
-    CausalSelfAttention modules) and also extracts the V projection weights from
-    the attention (c_attn) layer to create a "value network" cost similar to the
-    ViT example.
+    CausalSelfAttention modules) and also extracts the Q, K, V projection weights from
+    the attention (c_attn) layer to create "attention network" costs.
     """
 
     def __init__(
@@ -98,7 +97,11 @@ class SpatialNet(nn.Module):
         super(SpatialNet, self).__init__()
         self.model = model
         self.linear_layers = []
+        self.query_networks = []
+        self.key_networks = []
         self.value_networks = []
+        self.query_distance_matrices = []
+        self.key_distance_matrices = []
         self.value_distance_matrices = []
         self.linear_distance_matrices = []
         self.A = A
@@ -110,6 +113,12 @@ class SpatialNet(nn.Module):
         self._extract_layers(model)
         self.linear_distance_matrices = [
             m.to(device) for m in self.linear_distance_matrices
+        ]
+        self.query_distance_matrices = [
+            m.to(device) for m in self.query_distance_matrices
+        ]
+        self.key_distance_matrices = [
+            m.to(device) for m in self.key_distance_matrices
         ]
         self.value_distance_matrices = [
             m.to(device) for m in self.value_distance_matrices
@@ -135,30 +144,43 @@ class SpatialNet(nn.Module):
                 dist_matrix_cp = compute_distance_matrix(N, M, self.A, self.B, self.D)
                 self.linear_distance_matrices.append(dist_matrix_cp)
 
-                # Now handle the value projection part of c_attn
-                # c_attn.weight shape: [3*n_embd, n_embd]
-                # Value projection is the last n_embd x n_embd chunk
+                # Now handle the query, key, and value projection parts of c_attn
                 with torch.no_grad():
                     n_embd = layer.n_embd
+                    
+                    # Extract query, key, and value projections
+                    query_proj_weight = c_attn.weight[0 * n_embd : 1 * n_embd, :]  # W_Q
+                    key_proj_weight = c_attn.weight[1 * n_embd : 2 * n_embd, :]    # W_K
                     value_proj_weight = c_attn.weight[2 * n_embd : 3 * n_embd, :]  # W_V
+                    
                     # If bias exists:
-                    value_proj_bias = None
+                    query_proj_bias = key_proj_bias = value_proj_bias = None
                     if c_attn.bias is not None:
+                        query_proj_bias = c_attn.bias[0 * n_embd : 1 * n_embd]
+                        key_proj_bias = c_attn.bias[1 * n_embd : 2 * n_embd]
                         value_proj_bias = c_attn.bias[2 * n_embd : 3 * n_embd]
 
-                # Store this as a "value network"
-                # We'll store the reference directly to c_attn parameters since we want them optimized
-                # We'll just keep track of indices. But for simplicity, treat them like a network.
+                # Store query, key, and value networks
+                self.query_networks.append(
+                    (c_attn.weight[0 * n_embd : 1 * n_embd, :], query_proj_bias)
+                )
+                self.key_networks.append(
+                    (c_attn.weight[1 * n_embd : 2 * n_embd, :], key_proj_bias)
+                )
                 self.value_networks.append(
                     (c_attn.weight[2 * n_embd : 3 * n_embd, :], value_proj_bias)
                 )
-                # Distance matrix for value projection
-                N_v, M_v = value_proj_weight.size(1), value_proj_weight.size(
-                    0
-                )  # in_features, out_features
-                dist_matrix_v = compute_distance_matrix(
-                    N_v, M_v, self.A, self.B, self.D
-                )
+                
+                # Create distance matrices for query, key, and value projections
+                N_qkv, M_qkv = query_proj_weight.size(1), query_proj_weight.size(0)  # in_features, out_features
+                
+                # They should all have the same dimensions
+                dist_matrix_q = compute_distance_matrix(N_qkv, M_qkv, self.A, self.B, self.D)
+                dist_matrix_k = compute_distance_matrix(N_qkv, M_qkv, self.A, self.B, self.D)
+                dist_matrix_v = compute_distance_matrix(N_qkv, M_qkv, self.A, self.B, self.D)
+                
+                self.query_distance_matrices.append(dist_matrix_q)
+                self.key_distance_matrices.append(dist_matrix_k)
                 self.value_distance_matrices.append(dist_matrix_v)
 
             else:
@@ -171,7 +193,7 @@ class SpatialNet(nn.Module):
         # Compute cost for linear layers
         new_dist_matrices = []
         i = 0
-        total = len(self.linear_distance_matrices) + len(self.value_distance_matrices)
+        total = len(self.linear_distance_matrices) + len(self.query_distance_matrices) + len(self.key_distance_matrices) + len(self.value_distance_matrices)
         
         for layer, dist_matrix in zip(self.linear_layers, self.linear_distance_matrices):
             i += 1
@@ -184,6 +206,33 @@ class SpatialNet(nn.Module):
         
         self.linear_distance_matrices = new_dist_matrices
         
+        # Optimize query networks
+        new_dist_matrices = []
+        for query_proj, dist_matrix in zip(self.query_networks, self.query_distance_matrices):
+            i += 1
+            print(f"{i}/{total} optimizing query network", flush=True)
+            weight_abs = torch.abs(query_proj[0]).detach().cpu()
+            dist_matrix_cpu = dist_matrix.detach().cpu()
+            optimized_dist = alternative_hungarian_optimization(weight_abs, dist_matrix_cpu)
+            optimized_dist = optimized_dist.to(dist_matrix.device)
+            new_dist_matrices.append(optimized_dist)
+        
+        self.query_distance_matrices = new_dist_matrices
+        
+        # Optimize key networks
+        new_dist_matrices = []
+        for key_proj, dist_matrix in zip(self.key_networks, self.key_distance_matrices):
+            i += 1
+            print(f"{i}/{total} optimizing key network", flush=True)
+            weight_abs = torch.abs(key_proj[0]).detach().cpu()
+            dist_matrix_cpu = dist_matrix.detach().cpu()
+            optimized_dist = alternative_hungarian_optimization(weight_abs, dist_matrix_cpu)
+            optimized_dist = optimized_dist.to(dist_matrix.device)
+            new_dist_matrices.append(optimized_dist)
+        
+        self.key_distance_matrices = new_dist_matrices
+        
+        # Optimize value networks
         new_dist_matrices = []
         for value_proj, dist_matrix in zip(self.value_networks, self.value_distance_matrices):
             i += 1
@@ -212,13 +261,28 @@ class SpatialNet(nn.Module):
             costs.append(torch.sum(weight_abs * dist_matrix))
             param_counts.append(weight_abs.numel())
 
-        # Compute cost for value projection layers
+        # Compute cost for query, key, and value projection layers
+        for (query_proj_weight, _), dist_matrix in zip(
+            self.query_networks, self.query_distance_matrices
+        ):
+            weight_abs = torch.abs(query_proj_weight)
+            costs.append(torch.sum(weight_abs * dist_matrix))
+            param_counts.append(weight_abs.numel())
+            
+        for (key_proj_weight, _), dist_matrix in zip(
+            self.key_networks, self.key_distance_matrices
+        ):
+            weight_abs = torch.abs(key_proj_weight)
+            costs.append(torch.sum(weight_abs * dist_matrix))
+            param_counts.append(weight_abs.numel())
+            
         for (value_proj_weight, _), dist_matrix in zip(
             self.value_networks, self.value_distance_matrices
         ):
             weight_abs = torch.abs(value_proj_weight)
             costs.append(torch.sum(weight_abs * dist_matrix))
             param_counts.append(weight_abs.numel())
+            
         if costs:
             total_cost = torch.stack(costs).sum()
             total_params = sum(param_counts)
@@ -230,4 +294,3 @@ class SpatialNet(nn.Module):
 
     def forward(self, idx, targets=None):
         return self.model(idx, targets=targets)
-

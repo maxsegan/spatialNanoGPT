@@ -14,6 +14,7 @@ import glob
 import shutil
 import threading
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from multiprocessing import Process, Manager
 
@@ -71,10 +72,18 @@ HYPERPARAMS = {
 def create_directories():
     """Create all necessary directories for the experiment."""
     os.makedirs(OUTPUT_ROOT, exist_ok=True)
-    os.makedirs(os.path.join(OUTPUT_ROOT, "sweep_results"), exist_ok=True)
-    os.makedirs(os.path.join(OUTPUT_ROOT, "sweep_pareto_fronts"), exist_ok=True)
+    
+    # Create both potential results directories
+    results_dir = os.path.join(OUTPUT_ROOT, "results")
+    sweep_results_dir = os.path.join(OUTPUT_ROOT, "sweep_results")
+    pareto_dir = os.path.join(OUTPUT_ROOT, "sweep_pareto_fronts")
+    
+    os.makedirs(results_dir, exist_ok=True)
+    os.makedirs(sweep_results_dir, exist_ok=True)
+    os.makedirs(pareto_dir, exist_ok=True)
+    
     logger.info(f"Created output directories in {OUTPUT_ROOT}")
-    return os.path.join(OUTPUT_ROOT, "sweep_results"), os.path.join(OUTPUT_ROOT, "sweep_pareto_fronts")
+    return results_dir, pareto_dir
 
 def get_model_name(category, params):
     """Generate a model name from hyperparameters."""
@@ -84,6 +93,22 @@ def get_model_name(category, params):
         name_parts.append(f"{key}_{str(value).replace('.', 'p')}")
     
     return "_".join(name_parts)
+
+def get_model_category(model_name):
+    """Extract the category from a model name - handles existing results"""
+    # First, try a direct match with the first component
+    first_part = model_name.split('_')[0]
+    
+    if first_part in HYPERPARAMS:
+        return first_part
+        
+    # If that fails, try each of the hyperparameter categories as a prefix match
+    for category in HYPERPARAMS.keys():
+        if model_name.startswith(category + "_"):
+            return category
+    
+    # If still no match, return Unknown
+    return "Unknown"
 
 def run_training(name, l1_scale, weight_decay, spatial_cost_scale, spatial_d_value, max_iters=5000, gpu_id=0):
     """
@@ -112,13 +137,13 @@ def run_training(name, l1_scale, weight_decay, spatial_cost_scale, spatial_d_val
             logger.error(f"Base config not found")
             return None
     
-    # Create config file
+    # Create config file - use forward slashes for Linux paths
     config_content = f"""# Configuration for {name}
 # Import base configuration
-exec(open(r"{base_config_path.replace(os.sep, '/')}").read())
+exec(open("{base_config_path}").read())
 
 # Override parameters
-out_dir = r"{out_dir.replace(os.sep, '/')}"
+out_dir = "{out_dir}"
 l1_scale = {l1_scale}
 weight_decay = {weight_decay}
 spatial_cost_scale = {spatial_cost_scale}
@@ -140,9 +165,9 @@ wandb_run_name = '{name}'
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     
-    # Yehuda, you probably need to change this since I assume you're on Linux
-    use_shell = sys.platform == 'win32'
-    cmd = f"python {train_script} {config_file}"
+    # Linux doesn't need shell=True for basic commands
+    use_shell = False
+    cmd = ["python", train_script, config_file]
     
     # Create output log files
     stdout_log = os.path.join(out_dir, "train_log.txt")
@@ -237,10 +262,16 @@ def evaluate_model(model_name, model_dir, gpu_id=0):
     """
     Evaluate a trained model at different sparsity levels.
     """
+    # Check both possible result directories
     results_dir = os.path.join(OUTPUT_ROOT, "results")
+    sweep_results_dir = os.path.join(OUTPUT_ROOT, "sweep_results")
+    
+    # Create results directory if it doesn't exist
     os.makedirs(results_dir, exist_ok=True)
     
+    # Look for results in both possible locations
     results_file = os.path.join(results_dir, f"{model_name}_sparsity.csv")
+    sweep_results_file = os.path.join(sweep_results_dir, f"{model_name}_sparsity.csv")
     
     if os.path.exists(results_file):
         logger.info(f"Results already exist for {model_name}, skipping evaluation")
@@ -256,9 +287,18 @@ def evaluate_model(model_name, model_dir, gpu_id=0):
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     
-    # Use platform-specific command setup
-    use_shell = sys.platform == 'win32'
-    cmd = f"python {eval_script} --experiments_dir={OUTPUT_ROOT} --data_dir={data_dir} --block_size=256 --batch_size=64 --eval_iters=200 --results_dir=results"
+    # Use array of arguments for Linux
+    use_shell = False
+    cmd = [
+        "python", 
+        eval_script, 
+        f"--experiments_dir={OUTPUT_ROOT}", 
+        f"--data_dir={data_dir}", 
+        "--block_size=256", 
+        "--batch_size=64", 
+        "--eval_iters=200", 
+        "--results_dir=results"
+    ]
     
     # Create output log files
     stdout_log = os.path.join(results_dir, f"{model_name}_eval_log.txt")
@@ -341,12 +381,15 @@ def evaluate_model(model_name, model_dir, gpu_id=0):
             raise
     
     # Check if evaluation produced results
-    if not os.path.exists(results_file):
-        logger.error(f"Results file not found for {model_name}")
+    if os.path.exists(results_file):
+        logger.info(f"Evaluation completed successfully for {model_name}")
+        return results_file
+    elif os.path.exists(sweep_results_file):
+        logger.info(f"Evaluation completed successfully for {model_name} (found in sweep_results)")
+        return sweep_results_file
+    else:
+        logger.error(f"Results file not found for {model_name} in either results or sweep_results")
         return None
-    
-    logger.info(f"Evaluation completed successfully for {model_name}")
-    return results_file
 
 def process_model(model_info, gpu_id=0):
     """Process a single model (train and evaluate)."""
@@ -382,39 +425,68 @@ def generate_pareto_fronts(results_dir, pareto_dir):
     """Generate Pareto fronts for each category and sparsity level."""
     logger.info("Generating Pareto fronts")
     
-    # Load all results
+    # Load all results from both possible directories
     all_results = []
+    
+    # Try both the main results directory and sweep_results directory
     result_files = glob.glob(os.path.join(results_dir, "*.csv"))
+    sweep_results_dir = os.path.join(OUTPUT_ROOT, "sweep_results")
+    sweep_result_files = glob.glob(os.path.join(sweep_results_dir, "*.csv"))
+    
+    # Combine files from both directories
+    result_files.extend(sweep_result_files)
+    logger.info(f"Found {len(result_files)} result files across all directories")
+    
+    # Load all results from both possible directories
+    all_results = []
+    
+    # Try both the main results directory and sweep_results directory
+    result_files = glob.glob(os.path.join(results_dir, "*.csv"))
+    sweep_results_dir = os.path.join(OUTPUT_ROOT, "sweep_results")
+    sweep_result_files = glob.glob(os.path.join(sweep_results_dir, "*.csv"))
+    
+    # Combine files from both directories
+    result_files.extend(sweep_result_files)
+    logger.info(f"Found {len(result_files)} result files across all directories")
     
     for file in result_files:
         try:
             df = pd.read_csv(file)
-            model_name = df["model_name"].iloc[0]
             
-            # Extract category from model name
-            category = model_name.split("_")[0]
+            # Apply the category function to each model in the dataframe
+            categories = []
+            for model_name in df["model_name"]:
+                category = get_model_category(model_name)
+                categories.append(category)
             
-            # Add category column
-            df["category"] = category
+            # Add category column based on our function
+            df["category"] = categories
             
             # Extract spatial_d_value if available
             if "spatial_d_value" not in df.columns:
                 param_pattern = "spatial_d_value_"
-                param_index = model_name.find(param_pattern)
-                
-                if param_index >= 0:
-                    # Extract value after parameter name until next underscore
-                    param_str = model_name[param_index + len(param_pattern):]
-                    param_end = param_str.find("_") if "_" in param_str else len(param_str)
-                    param_value = param_str[:param_end].replace("p", ".")
+                for idx, model_name in enumerate(df["model_name"]):
+                    param_index = model_name.find(param_pattern)
                     
-                    try:
-                        param_value = float(param_value)
-                        df["spatial_d_value"] = param_value
-                    except ValueError:
-                        df["spatial_d_value"] = 1.0  # Default value if parsing fails
-                else:
-                    df["spatial_d_value"] = 1.0  # Default value
+                    if param_index >= 0:
+                        # Extract value after parameter name until next underscore
+                        param_str = model_name[param_index + len(param_pattern):]
+                        param_end = param_str.find("_") if "_" in param_str else len(param_str)
+                        param_value = param_str[:param_end].replace("p", ".")
+                        
+                        try:
+                            param_value = float(param_value)
+                            # If this is the first one, create the column
+                            if "spatial_d_value" not in df.columns:
+                                df["spatial_d_value"] = 1.0  # Default
+                            # Set this value
+                            df.at[idx, "spatial_d_value"] = param_value
+                        except ValueError:
+                            pass
+                
+                # If column wasn't created, create it with defaults
+                if "spatial_d_value" not in df.columns:
+                    df["spatial_d_value"] = 1.0
             
             all_results.append(df)
         except Exception as e:
@@ -426,61 +498,103 @@ def generate_pareto_fronts(results_dir, pareto_dir):
         return
     
     combined_df = pd.concat(all_results, ignore_index=True)
+    
+    # Log summary of data
+    logger.info(f"Combined dataframe contains {len(combined_df)} rows")
+    logger.info(f"Categories present: {combined_df['category'].unique()}")
+    
+    # Log count of models per category
+    category_counts = combined_df.groupby('category').size()
+    for category, count in category_counts.items():
+        logger.info(f"Category {category}: {count} models")
+    
+    # Log count of models per sparsity level
+    sparsity_counts = combined_df.groupby('target_sparsity').size()
+    for sparsity, count in sparsity_counts.items():
+        logger.info(f"Sparsity {sparsity}: {count} models")
+    
     combined_df.to_csv(os.path.join(results_dir, "all_models_results.csv"), index=False)
     
     # Generate Pareto fronts for each category and sparsity level
-    for category in combined_df["category"].unique():
-        category_df = combined_df[combined_df["category"] == category]
-        
-        # Create a figure for this category
-        plt.figure(figsize=(12, 8))
-        
-        for sparsity in SPARSITY_LEVELS:
-            sparsity_df = category_df[category_df["target_sparsity"] == sparsity]
+    # Only generate these for categories in HYPERPARAMS
+    for category in HYPERPARAMS.keys():
+        if category in combined_df["category"].unique():
+            # Get only the models explicitly from this category
+            category_df = combined_df[combined_df["category"] == category]
             
-            if len(sparsity_df) == 0:
-                continue
+            # Debug information
+            logger.info(f"Processing category {category} with {len(category_df)} models")
             
-            # Sort by validation loss
-            sparsity_df = sparsity_df.sort_values("val_loss")
+            # Create a figure for this category
+            plt.figure(figsize=(12, 8))
             
-            # Save to CSV
-            pareto_file = os.path.join(pareto_dir, f"{category}_sparsity_{sparsity:.2f}.csv")
-            sparsity_df.to_csv(pareto_file, index=False)
+            for sparsity in SPARSITY_LEVELS:
+                sparsity_df = category_df[category_df["target_sparsity"] == sparsity]
+                
+                if len(sparsity_df) == 0:
+                    continue
+                
+                # Sort by validation loss
+                sparsity_df = sparsity_df.sort_values("val_loss")
+                
+                # Debug: Log the models in this category/sparsity
+                model_names = sparsity_df["model_name"].tolist()
+                logger.info(f"  {category} at sparsity {sparsity:.2f} has {len(model_names)} models: {model_names[:2]}...")
+                
+                # Verify each model actually belongs to this category
+                verified_models = []
+                for idx, row in sparsity_df.iterrows():
+                    model_name = row["model_name"]
+                    model_category = get_model_category(model_name)
+                    if model_category == category:
+                        verified_models.append(row)
+                    else:
+                        logger.warning(f"  Removing model {model_name} (category {model_category}) from {category} results")
+                
+                # If we removed some models, recreate the dataframe
+                if len(verified_models) < len(sparsity_df):
+                    sparsity_df = pd.DataFrame(verified_models)
+                    
+                    # If no models left, skip
+                    if len(sparsity_df) == 0:
+                        logger.warning(f"  No valid models for {category} at sparsity {sparsity:.2f}")
+                        continue
+                
+                # Save to CSV
+                pareto_file = os.path.join(pareto_dir, f"{category}_sparsity_{sparsity:.2f}.csv")
+                sparsity_df.to_csv(pareto_file, index=False)
+                
+                # Plot sparsity vs loss
+                plt.plot(sparsity_df["actual_sparsity"].to_numpy(), sparsity_df["val_loss"].to_numpy(), 
+                        'o-', label=f"Sparsity {sparsity:.2f}")
             
-            # Plot sparsity vs loss
-            plt.plot(sparsity_df["actual_sparsity"], sparsity_df["val_loss"], 
-                    'o-', label=f"Sparsity {sparsity:.2f}")
-        
-        plt.xlabel("Actual Sparsity")
-        plt.ylabel("Validation Loss")
-        plt.title(f"Sparsity vs Loss for {category}")
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        
-        # Save plot
-        plt.savefig(os.path.join(pareto_dir, f"{category}_pareto_front.png"))
-        plt.close()
+            plt.xlabel("Actual Sparsity")
+            plt.ylabel("Validation Loss")
+            plt.title(f"Sparsity vs Loss for {category}")
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+            
+            # Save plot
+            plt.savefig(os.path.join(pareto_dir, f"{category}_pareto_front.png"))
+            plt.close()
     
-    # Create two comparison plots across categories (all and top performers)
+    # Create comparison plots across all hyperparameter categories
+    # Define plot types based on HYPERPARAMS keys
     for plot_type, categories_to_plot, filename in [
-        ("All Categories", None, "best_models_comparison_all.png"),
+        ("All Categories", list(HYPERPARAMS.keys()), "best_models_comparison_all.png"),
         ("Top Performers", ["L1_Only", "L1_Spatial", "L1_L2", "All", "2DSpatial"], "best_models_comparison_top.png")
     ]:
         plt.figure(figsize=(15, 10))
         
-        # Filter categories if needed
-        plot_categories = combined_df["category"].unique() if categories_to_plot is None else categories_to_plot
+        # Filter categories from our HYPERPARAMS
+        valid_categories = [cat for cat in categories_to_plot if cat in combined_df["category"].unique()]
         
         # For each sparsity level
         for sparsity in SPARSITY_LEVELS:
             # For each category, find the best model at this sparsity
             best_models = []
             
-            for category in plot_categories:
-                if category not in combined_df["category"].values:
-                    continue
-                    
+            for category in valid_categories:
                 category_df = combined_df[(combined_df["category"] == category) & 
                                         (combined_df["target_sparsity"] == sparsity)]
                 
@@ -498,7 +612,7 @@ def generate_pareto_fronts(results_dir, pareto_dir):
                 best_df.to_csv(best_file, index=False)
                 
                 # Plot category vs loss
-                plt.scatter(best_df["category"], best_df["val_loss"], 
+                plt.scatter(best_df["category"].to_numpy(), best_df["val_loss"].to_numpy(), 
                           label=f"Sparsity {sparsity:.2f}", s=100)
         
         plt.xlabel("Category")
@@ -542,7 +656,7 @@ def generate_pareto_fronts(results_dir, pareto_dir):
             
             if sparsity_results:
                 sparsities, losses = zip(*sparsity_results)
-                plt.plot(sparsities, losses, 'o-', 
+                plt.plot(np.array(sparsities), np.array(losses), 'o-', 
                        label=f"D={d}", 
                        color=d_cmap(i))
         
@@ -555,6 +669,125 @@ def generate_pareto_fronts(results_dir, pareto_dir):
         # Save plot
         plt.savefig(os.path.join(pareto_dir, "2dspatial_d_value_comparison.png"))
         plt.close()
+    
+    # Create a separate plot with just the top performing groups
+    plt.figure(figsize=(15, 10))
+    
+    # Only include specific top performing groups, excluding 2DSpatial due to scaling issues
+    top_groups = ["L1_Only", "L1_Spatial", "L1_L2", "All"]
+    valid_top_groups = [group for group in top_groups 
+                       if group in combined_df["category"].unique()]
+    
+    # Track if we successfully plotted anything
+    plotted_any = False
+    
+    # Create a colormap for the groups
+    top_group_cmap = plt.cm.get_cmap("tab10", len(valid_top_groups))
+    
+    # For each top hyperparameter group
+    for i, group in enumerate(valid_top_groups):
+        # Find all models in this group
+        group_models = combined_df[combined_df["category"] == group]
+        
+        if len(group_models) == 0:
+            logger.warning(f"No models found for top group {group}")
+            continue
+        
+        # Get best model at each sparsity level
+        sparsity_results = []
+        
+        for sparsity in SPARSITY_LEVELS:
+            sparsity_models = group_models[group_models["target_sparsity"] == sparsity]
+            
+            if len(sparsity_models) > 0:
+                # Get the model with the lowest validation loss
+                best_model = sparsity_models.loc[sparsity_models["val_loss"].idxmin()]
+                sparsity_results.append((sparsity, best_model["val_loss"]))
+        
+        if sparsity_results:
+            sparsities, losses = zip(*sparsity_results)
+            plt.plot(np.array(sparsities), np.array(losses), 'o-', 
+                   label=group,
+                   color=top_group_cmap(i),
+                   linewidth=2,
+                   markersize=8)
+            plotted_any = True
+    
+    # Only add these elements if we actually plotted data
+    if plotted_any:
+        plt.xlabel("Target Sparsity")
+        plt.ylabel("Best Validation Loss")
+        plt.title("Comparison of Top Performing Hyperparameter Groups")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+    else:
+        plt.text(0.5, 0.5, "No valid data to plot", 
+                horizontalalignment='center',
+                verticalalignment='center',
+                transform=plt.gca().transAxes)
+    
+    # Save plot
+    plt.savefig(os.path.join(pareto_dir, "hyperparameter_group_comparison_top.png"))
+    plt.close()
+    
+    # Create another special plot with just 2DSpatial by itself
+    plt.figure(figsize=(15, 10))
+    
+    # Find 2DSpatial models
+    spatial_models = combined_df[combined_df["category"] == "2DSpatial"]
+    
+    if len(spatial_models) > 0:
+        # Get best model at each sparsity level
+        sparsity_results = []
+        
+        for sparsity in SPARSITY_LEVELS:
+            sparsity_models = spatial_models[spatial_models["target_sparsity"] == sparsity]
+            
+            if len(sparsity_models) > 0:
+                # Get the model with the lowest validation loss
+                best_model = sparsity_models.loc[sparsity_models["val_loss"].idxmin()]
+                sparsity_results.append((sparsity, best_model["val_loss"]))
+        
+        if sparsity_results:
+            sparsities, losses = zip(*sparsity_results)
+            plt.plot(np.array(sparsities), np.array(losses), 'o-', 
+                   label="2DSpatial",
+                   color="cyan",
+                   linewidth=2,
+                   markersize=8)
+            
+            plt.xlabel("Target Sparsity")
+            plt.ylabel("Best Validation Loss")
+            plt.title("Performance of 2DSpatial Models")
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+        else:
+            plt.text(0.5, 0.5, "No valid 2DSpatial data to plot", 
+                    horizontalalignment='center',
+                    verticalalignment='center',
+                    transform=plt.gca().transAxes)
+    else:
+        plt.text(0.5, 0.5, "No 2DSpatial models found", 
+                horizontalalignment='center',
+                verticalalignment='center',
+                transform=plt.gca().transAxes)
+    
+    # Save plot
+    plt.savefig(os.path.join(pareto_dir, "2dspatial_performance.png"))
+    plt.close()
+    
+    plt.xlabel("Target Sparsity")
+    plt.ylabel("Best Validation Loss")
+    plt.title("Comparison of Best Models by Hyperparameter Group")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    # Save plot
+    plt.savefig(os.path.join(pareto_dir, "hyperparameter_group_comparison.png"))
+    plt.close()
+    
+    # Call our special direct comparison plot function
+    generate_simple_comparison_plot(combined_df, os.path.join(pareto_dir, "hyperparameter_group_comparison.png"))
     
     logger.info("Pareto front generation completed")
 
@@ -569,6 +802,84 @@ def worker(model_queue, results_queue, gpu_id):
             logger.error(f"Error in worker on GPU {gpu_id}: {str(e)}")
         finally:
             model_queue.task_done()
+
+def generate_simple_comparison_plot(combined_df, output_path):
+    """Generate a very simple comparison plot directly from the data."""
+    plt.figure(figsize=(15, 10))
+    
+    # Define the categories we want to plot
+    categories = ["Baseline", "L1_Only", "L2_Only", "Spatial_Only", 
+                 "L1_Spatial", "L2_Spatial", "L1_L2", "All", "2DSpatial"]
+    
+    # Define nice colors for the categories
+    colors = ['blue', 'orange', 'green', 'red', 'purple', 
+              'brown', 'pink', 'gray', 'cyan']
+    
+    # Create a dictionary to store the best model for each category and sparsity
+    best_models = {}
+    
+    # Initialize the dictionary
+    for category in categories:
+        best_models[category] = {}
+        for sparsity in SPARSITY_LEVELS:
+            best_models[category][sparsity] = None
+    
+    # Find the best model for each category and sparsity
+    for _, row in combined_df.iterrows():
+        model_name = row["model_name"]
+        category = None
+        
+        # Determine the category from the model name
+        for cat in categories:
+            if model_name.startswith(cat + "_"):
+                category = cat
+                break
+        
+        if category is None:
+            continue
+            
+        sparsity = row["target_sparsity"]
+        val_loss = row["val_loss"]
+        
+        # Check if this is the best model for this category and sparsity
+        if sparsity in best_models[category]:
+            current_best = best_models[category][sparsity]
+            if current_best is None or val_loss < current_best[1]:
+                best_models[category][sparsity] = (model_name, val_loss)
+    
+    # Plot the best models for each category
+    for i, category in enumerate(categories):
+        # Get the sparsity and loss values
+        points = []
+        for sparsity in SPARSITY_LEVELS:
+            if sparsity in best_models[category] and best_models[category][sparsity] is not None:
+                points.append((sparsity, best_models[category][sparsity][1]))
+        
+        if points:
+            # Sort by sparsity
+            points.sort(key=lambda x: x[0])
+            
+            # Extract x and y values
+            x_values = [p[0] for p in points]
+            y_values = [p[1] for p in points]
+            
+            # Plot
+            plt.plot(x_values, y_values, 'o-', 
+                   label=category, 
+                   color=colors[i % len(colors)],
+                   linewidth=2,
+                   markersize=8)
+    
+    # Add labels and legend
+    plt.xlabel("Target Sparsity")
+    plt.ylabel("Best Validation Loss")
+    plt.title("Comparison of Best Models by Hyperparameter Group")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    # Save the plot
+    plt.savefig(output_path)
+    plt.close()
 
 def main():
     """Main function to run the parameter search."""
