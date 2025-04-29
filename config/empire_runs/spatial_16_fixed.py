@@ -15,7 +15,7 @@ eval_interval = 1000
 eval_iters = 200
 log_interval = 10
 # weight decay (L2 regularization)
-weight_decay = 1e-1
+weight_decay = 0
 # regularization
 spatial_cost_scale = 16
 spatial_mode = "fixed"
