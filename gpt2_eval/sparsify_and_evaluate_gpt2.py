@@ -50,38 +50,45 @@ os.makedirs(args.results_dir, exist_ok=True)
 CHECKPOINTS = [
     {
         'repo_id': 'maxsegan/gpt2_l1_8_100k',
-        'filename': 'checkpoint.pt',
-        'name': 'l1_8_100k'
+        'filename': 'pytorch_model.bin',
+        'name': 'maxsegan_gpt2_l1_8_100k',
+        'group': 'L1'
     },
     {
         'repo_id': 'maxsegan/gpt2_l1_16_100k',
-        'filename': 'checkpoint.pt',
-        'name': 'l1_16_100k'
+        'filename': 'pytorch_model.bin',
+        'name': 'maxsegan_gpt2_l1_16_100k',
+        'group': 'L1'
     },
     {
         'repo_id': 'maxsegan/gpt2_l1_32_100k',
-        'filename': 'checkpoint.pt',
-        'name': 'l1_32_100k'
+        'filename': 'pytorch_model.bin',
+        'name': 'maxsegan_gpt2_l1_32_100k',
+        'group': 'L1'
     },
     {
         'repo_id': 'maxsegan/gpt2_l1_64_100k',
-        'filename': 'checkpoint.pt',
-        'name': 'l1_64_100k'
-    },
-    {
-        'repo_id': 'maxsegan/gpt2_full_spatial_16_100k',
-        'filename': 'checkpoint.pt',
-        'name': 'spatial_16_100k'
-    },
-    {
-        'repo_id': 'maxsegan/gpt2_full_spatial_64_100k',
-        'filename': 'checkpoint.pt',
-        'name': 'spatial_64_100k'
+        'filename': 'pytorch_model.bin',
+        'name': 'maxsegan_gpt2_l1_64_100k',
+        'group': 'L1'
     },
     {
         'repo_id': 'maxsegan/gpt2_full_spatial_128_100k',
-        'filename': 'checkpoint.pt',
-        'name': 'spatial_128_100k'
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_full_spatial_128_100k',
+        'group': 'L1'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_full_spatial_64_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_full_spatial_64_100k',
+        'group': 'L1'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_full_spatial_16_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_full_spatial_16_100k',
+        'group': 'L1'
     }
 ]
 
@@ -168,6 +175,7 @@ def estimate_loss(model, fixed_batches):
     
     # Process each batch
     for i, (x, y) in enumerate(fixed_batches):
+        print("batch #", i)
         # Forward pass with your custom GPT model
         logits, loss = model(x, y)
         losses[i] = loss
@@ -188,6 +196,7 @@ def find_checkpoints():
                 checkpoints.append({
                     'name': ckpt['name'],
                     'checkpoint_path': local_file,
+                    'group': ckpt.get('group', 'Other')
                 })
             except Exception as e:
                 print(f"Error downloading checkpoint from {ckpt['repo_id']}: {str(e)}")
@@ -195,7 +204,7 @@ def find_checkpoints():
         
         print(f"Found total of {len(checkpoints)} checkpoints for evaluation")
         for ckpt in checkpoints:
-            print(f"  - {ckpt['name']}")
+            print(f"  - {ckpt['name']} (Group: {ckpt['group']})")
         
         return checkpoints
     
@@ -280,8 +289,12 @@ def load_model_from_checkpoint(checkpoint_path, device=args.device):
         # Load the checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device)
         
+        # Determine if this is a HuggingFace standard PyTorch model
+        is_huggingface_model = os.path.basename(checkpoint_path) == 'pytorch_model.bin'
+        
         # Extract model configuration if available
         if isinstance(checkpoint, dict) and 'model_args' in checkpoint:
+            # Handle custom checkpoint format
             model_args = checkpoint['model_args']
             
             # Create the model using your GPT implementation
@@ -357,11 +370,164 @@ def load_model_from_checkpoint(checkpoint_path, device=args.device):
                 spatial_cost_scale = regularization.get('spatial_cost_scale', 0.0)
                 
                 return model, {'l1_scale': l1_scale, 'weight_decay': weight_decay, 'spatial_cost_scale': spatial_cost_scale}
-            
-            else:
-                print("Could not infer model configuration from state dict")
-                return None, None
         
+        # Handle HuggingFace standard PyTorch model format - direct state dict
+        elif is_huggingface_model:
+            print("Loading HuggingFace standard PyTorch model")
+            
+            # For HuggingFace models, try to load config.json from the same repo
+            repo_id = None
+            for ckpt in CHECKPOINTS:
+                if os.path.basename(checkpoint_path) == os.path.basename(ckpt['filename']) and 'maxsegan' in ckpt['repo_id']:
+                    repo_id = ckpt['repo_id']
+                    break
+            
+            model_config = None
+            if repo_id:
+                try:
+                    # Try to download and load config.json
+                    config_file = hf_hub_download(repo_id=repo_id, filename='config.json')
+                    with open(config_file, 'r') as f:
+                        import json
+                        model_config = json.load(f)
+                    print(f"Loaded model config from {repo_id}/config.json")
+                except Exception as e:
+                    print(f"Could not load config.json: {str(e)}")
+            
+            # If we have a config file, use it to create the model
+            if model_config:
+                # Use GPT-2 default configuration, with appropriate adjustments
+                n_layer = model_config.get('n_layer', 12)
+                n_head = model_config.get('n_head', 12)
+                n_embd = model_config.get('n_embd', 768)
+                vocab_size = model_config.get('vocab_size', 50257)
+                
+                print(f"Using config from config.json: n_layer={n_layer}, n_head={n_head}, n_embd={n_embd}, vocab_size={vocab_size}")
+            else:
+                # Try to infer from state dict
+                if isinstance(checkpoint, dict):
+                    # Try to determine config from state dict keys and shapes
+                    wte_key = next((k for k in checkpoint.keys() if 'wte.weight' in k), None)
+                    if wte_key:
+                        vocab_size, n_embd = checkpoint[wte_key].shape
+                    else:
+                        # Default GPT-2 small config
+                        vocab_size, n_embd = 50257, 768
+                    
+                    # Count layers by scanning for layer indices
+                    n_layer = 0
+                    for key in checkpoint.keys():
+                        if '.h.' in key or '.transformer.h.' in key:
+                            parts = key.split('.')
+                            for i, part in enumerate(parts):
+                                if part == 'h' and i + 1 < len(parts) and parts[i+1].isdigit():
+                                    layer_idx = int(parts[i+1])
+                                    n_layer = max(n_layer, layer_idx + 1)
+                    
+                    if n_layer == 0:  # If no layers found, use default
+                        n_layer = 12
+                    
+                    # Default GPT-2 head config
+                    n_head = 12
+                    
+                    print(f"Inferring model config from state dict: n_layer={n_layer}, n_head={n_head}, n_embd={n_embd}, vocab_size={vocab_size}")
+                else:
+                    # Complete fallback to default GPT-2 small config
+                    n_layer, n_head, n_embd, vocab_size = 12, 12, 768, 50257
+                    print(f"Using default GPT-2 small config: n_layer={n_layer}, n_head={n_head}, n_embd={n_embd}, vocab_size={vocab_size}")
+            
+            # Create model with inferred or default config
+            config = GPTConfig(n_layer=n_layer, n_head=n_head, n_embd=n_embd, 
+                              vocab_size=vocab_size, block_size=args.block_size)
+            model = GPT(config)
+            
+            # Try to adapt HuggingFace state dict to our model format
+            try:
+                # If checkpoint is a state dict with HF-style keys, try mapping the keys
+                hf_state_dict = checkpoint
+                our_state_dict = {}
+                
+                # Map HuggingFace keys to our model keys
+                key_mapping = {
+                    # This is a rough mapping, may need adjustment
+                    'transformer.wte.weight': 'transformer.wte.weight',
+                    'transformer.wpe.weight': 'transformer.wpe.weight',
+                    'transformer.ln_f.weight': 'transformer.ln_f.weight',
+                    'transformer.ln_f.bias': 'transformer.ln_f.bias',
+                    'lm_head.weight': 'lm_head.weight',
+                }
+                
+                # Layer-specific mappings
+                for i in range(n_layer):
+                    layer_map = {
+                        f'transformer.h.{i}.ln_1.weight': f'transformer.h.{i}.ln_1.weight',
+                        f'transformer.h.{i}.ln_1.bias': f'transformer.h.{i}.ln_1.bias',
+                        f'transformer.h.{i}.ln_2.weight': f'transformer.h.{i}.ln_2.weight',
+                        f'transformer.h.{i}.ln_2.bias': f'transformer.h.{i}.ln_2.bias',
+                        f'transformer.h.{i}.attn.c_attn.weight': f'transformer.h.{i}.attn.c_attn.weight',
+                        f'transformer.h.{i}.attn.c_attn.bias': f'transformer.h.{i}.attn.c_attn.bias',
+                        f'transformer.h.{i}.attn.c_proj.weight': f'transformer.h.{i}.attn.c_proj.weight',
+                        f'transformer.h.{i}.attn.c_proj.bias': f'transformer.h.{i}.attn.c_proj.bias',
+                        f'transformer.h.{i}.mlp.c_fc.weight': f'transformer.h.{i}.mlp.c_fc.weight',
+                        f'transformer.h.{i}.mlp.c_fc.bias': f'transformer.h.{i}.mlp.c_fc.bias',
+                        f'transformer.h.{i}.mlp.c_proj.weight': f'transformer.h.{i}.mlp.c_proj.weight',
+                        f'transformer.h.{i}.mlp.c_proj.bias': f'transformer.h.{i}.mlp.c_proj.bias',
+                    }
+                    key_mapping.update(layer_map)
+                
+                # Create a state dict for our model format
+                for hf_key, our_key in key_mapping.items():
+                    if hf_key in hf_state_dict:
+                        our_state_dict[our_key] = hf_state_dict[hf_key]
+                    elif our_key in hf_state_dict:  # Already in our format
+                        our_state_dict[our_key] = hf_state_dict[our_key]
+                
+            # For HF models, other keys might need different prefix mapping
+                for key in hf_state_dict:
+                    if key not in our_state_dict.keys() and key not in [v for k, v in key_mapping.items()]:
+                        # Try to map additional keys
+                        if 'transformer.' in key:
+                            our_state_dict[key] = hf_state_dict[key]
+                
+                # Initialize missing bias terms with zeros if needed
+                model_state_dict = model.state_dict()
+                for key in model_state_dict:
+                    if key not in our_state_dict and '.bias' in key:
+                        print(f"Initializing missing bias term: {key}")
+                        our_state_dict[key] = torch.zeros_like(model_state_dict[key])
+                
+                # Try to load the remapped state dict
+                try:
+                    model.load_state_dict(our_state_dict)
+                except Exception as e:
+                    print(f"Error loading remapped state dict: {str(e)}")
+                    print("Attempting to load with strict=False")
+                    model.load_state_dict(our_state_dict, strict=False)
+                
+                model.to(device)
+                model.eval()
+                
+                # For HF models, we don't have regularization info, use defaults
+                l1_scale = 0.0
+                if 'l1_' in os.path.basename(checkpoint_path) or any('l1_' in ckpt['repo_id'] for ckpt in CHECKPOINTS if ckpt['filename'] == os.path.basename(checkpoint_path)):
+                    # Extract L1 scale from the repo name if possible
+                    for ckpt in CHECKPOINTS:
+                        if ckpt['filename'] == os.path.basename(checkpoint_path):
+                            repo_parts = ckpt['repo_id'].split('/')[-1].split('_')
+                            for i, part in enumerate(repo_parts):
+                                if part == 'l1' and i + 1 < len(repo_parts) and repo_parts[i+1].isdigit():
+                                    l1_scale = int(repo_parts[i+1]) / 100.0  # Assuming format like l1_32 means 0.32
+                                    print(f"Extracted l1_scale={l1_scale} from repo name")
+                                    break
+                
+                return model, {'l1_scale': l1_scale, 'weight_decay': 0.0, 'spatial_cost_scale': 0.0}
+                
+            except Exception as e:
+                print(f"Error adapting HuggingFace model: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return None, None
+            
         else:
             print("Unsupported checkpoint format")
             return None, None
@@ -520,6 +686,7 @@ def main():
                     'l1_scale': l1_scale,
                     'weight_decay': weight_decay,
                     'spatial_cost_scale': spatial_cost_scale,
+                    'group': next((ckpt.get('group', 'Other') for ckpt in checkpoints if ckpt['name'] == model_name), 'Other')
                 }
                 model_results.append(result)
                 
@@ -571,7 +738,7 @@ def main():
     # Create comparison plots of all models (if we have combined results)
     if not combined_results.empty:
         try:
-            # Plot for loss
+            # Plot for loss - comparison by individual model
             plt.figure(figsize=(12, 8))
             
             # Plot each model as a separate line
@@ -588,6 +755,39 @@ def main():
             plt_path = os.path.join(args.results_dir, "all_models_loss_comparison.png")
             plt.savefig(plt_path)
             plt.close()
+            
+            # Plot for loss - comparison by group (for Pareto front visualization)
+            plt.figure(figsize=(12, 8))
+            
+            # Get unique groups
+            if 'group' in combined_results.columns:
+                groups = combined_results['group'].unique()
+                
+                # Color map for consistent colors per group
+                import matplotlib.cm as cm
+                colors = cm.tab10(np.linspace(0, 1, len(groups)))
+                
+                # Plot each group with distinct color and marker
+                for i, group in enumerate(groups):
+                    group_data = combined_results[combined_results['group'] == group]
+                    
+                    # For each model in the group
+                    for model_name in group_data['model_name'].unique():
+                        model_data = group_data[group_data['model_name'] == model_name]
+                        model_data = model_data.sort_values('actual_sparsity')
+                        
+                        # Use same color for all models in group but different markers or line styles
+                        plt.plot(model_data['actual_sparsity'], model_data['val_loss'], 'o-', 
+                                 color=colors[i], label=f"{model_name} ({group})" if i == 0 else model_name)
+                
+                plt.xlabel('Sparsity')
+                plt.ylabel('Validation Loss')
+                plt.title('Sparsity vs. Loss by Model Groups')
+                plt.grid(True, alpha=0.3)
+                plt.legend(loc='best', fontsize='small')
+                plt_path = os.path.join(args.results_dir, "model_groups_pareto_front.png")
+                plt.savefig(plt_path)
+                plt.close()
             
         except Exception as e:
             print(f"Error creating comparison plots: {str(e)}")

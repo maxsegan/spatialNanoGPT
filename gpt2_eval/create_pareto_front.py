@@ -74,7 +74,7 @@ def create_pareto_front_visualization(df, output_dir):
     plt.figure(figsize=(16, 10))
     
     # Define fixed sparsity levels we want to show
-    sparsity_levels = [0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
+    sparsity_levels = [0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
     
     # Get unique groups
     groups = df['group'].unique()

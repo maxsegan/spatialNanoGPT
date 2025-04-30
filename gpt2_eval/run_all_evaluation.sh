@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Run the full GPT2 model sparsification evaluation pipeline
+# Run the GPT2 model sparsification evaluation pipeline
 
 # Set default parameters
 BATCH_SIZE=4
@@ -54,7 +54,7 @@ fi
 
 echo "Starting GPT2 model sparsification pipeline..."
 
-# Step 1: Run the sparsification and evaluation script
+# Step 1: Run the updated sparsification and evaluation script
 echo "Step 1: Running model sparsification and evaluation..."
 SPARSIFY_ARGS=(
     "--batch_size" "$BATCH_SIZE"
@@ -65,9 +65,6 @@ SPARSIFY_ARGS=(
 
 if [ "$FORCE_EVAL" = true ]; then
     SPARSIFY_ARGS+=("--force_reevaluate")
-fi
-
-if [ "$FORCE_EVAL" = true ]; then
     echo "Force reevaluation enabled, clearing previous results..."
     rm -f gpt2_sparsity_results/*.csv
     rm -f gpt2_sparsity_results/all_gpt2_models_sparsity.csv
@@ -81,22 +78,8 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Step 2: Run the analysis script
-echo "Step 2: Analyzing results..."
-ANALYSIS_ARGS=(
-    "--results_dir" "gpt2_sparsity_results"
-)
-
-python analyze_sparsity_results.py "${ANALYSIS_ARGS[@]}"
-
-# Check if the previous step succeeded
-if [ $? -ne 0 ]; then
-    echo "Error in analysis step. Exiting."
-    exit 1
-fi
-
-# Step 3: Fix group assignments in the combined results
-echo "Step 3: Fixing group assignments in results..."
+# Step 2: Fix group assignments in the combined results
+echo "Step 2: Fixing group assignments in results..."
 python fix_group_assignments.py --results_dir "gpt2_sparsity_results"
 
 # Check if the previous step succeeded
@@ -105,8 +88,8 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Step 4: Create Pareto front visualization
-echo "Step 4: Creating group-based Pareto front visualization..."
+# Step 3: Create specialized Pareto front visualization
+echo "Step 3: Creating specialized Pareto front visualization..."
 PARETO_ARGS=(
     "--results_dir" "gpt2_sparsity_results"
     "--output_dir" "sparsity_analysis"
@@ -120,8 +103,8 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Step 5: Select optimal models
-echo "Step 5: Selecting optimal models..."
+# Step 4: Select optimal models
+echo "Step 4: Selecting optimal models..."
 SELECTION_ARGS=(
     "--results_dir" "gpt2_sparsity_results"
     "--output_file" "sparsity_analysis/optimal_models.json"
@@ -142,4 +125,4 @@ echo "Results are available in:"
 echo "- gpt2_sparsity_results/: Raw sparsification results"
 echo "- sparsity_analysis/: Analysis and visualizations"
 echo "- sparsity_analysis/optimal_models.json: Recommended model selections"
-echo "- sparsity_analysis/regularization_pareto_front.png: Group Pareto front visualization"
+echo "- sparsity_analysis/regularization_pareto_front.png: Specialized Pareto front visualization"

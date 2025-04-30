@@ -13,6 +13,3 @@ env/
 venv/
 /regularization_experiments
 /regularization_pareto
-/gpt2_eval/gpt2_sparsity_results
-gpt2_eval/sparsity_analysis/optimal_models.json
-gpt2_eval/sparsity_analysis/best_models_by_sparsity.csv
