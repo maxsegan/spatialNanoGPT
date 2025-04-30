@@ -2,11 +2,9 @@
 Sparsify and evaluate GPT2 models loaded from Hugging Face at different sparsity levels.
 This script:
 1. Loads trained GPT2 models from Hugging Face repository
-2. Filters for checkpoints that start with 'spatial' from the default repo
-3. Additionally loads a hardcoded checkpoint from maxsegan/gpt2_l1_32_100k
-4. Applies different levels of sparsity (0% to 90%)
-5. Evaluates the performance (loss) at each sparsity level
-6. Saves results to CSV files and creates visualization plots
+2. Applies different levels of sparsity (0% to 95%)
+3. Evaluates the performance (loss) at each sparsity level
+4. Saves results to CSV files and creates visualization plots
 """
 
 import os
@@ -16,7 +14,7 @@ import pandas as pd
 from tqdm import tqdm
 import argparse
 import matplotlib.pyplot as plt
-from huggingface_hub import hf_hub_download, list_repo_files
+from huggingface_hub import hf_hub_download
 import sys
 
 # Hack city import to find the model module
@@ -48,17 +46,43 @@ args.data_dir = os.path.normpath(args.data_dir)
 # Create results directory
 os.makedirs(args.results_dir, exist_ok=True)
 
-# Define default repository ID
-DEFAULT_REPO_ID = 'GitWyd/SNN'
-
-# Define hardcoded checkpoints for comparison
-COMPARISON_CHECKPOINTS = [
+# Define checkpoints to evaluate
+CHECKPOINTS = [
+    {
+        'repo_id': 'maxsegan/gpt2_l1_8_100k',
+        'filename': 'checkpoint.pt',
+        'name': 'l1_8_100k'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_l1_16_100k',
+        'filename': 'checkpoint.pt',
+        'name': 'l1_16_100k'
+    },
     {
         'repo_id': 'maxsegan/gpt2_l1_32_100k',
         'filename': 'checkpoint.pt',
-        'name': 'maxsegan_gpt2_l1_32_100k'
+        'name': 'l1_32_100k'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_l1_64_100k',
+        'filename': 'checkpoint.pt',
+        'name': 'l1_64_100k'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_full_spatial_16_100k',
+        'filename': 'checkpoint.pt',
+        'name': 'spatial_16_100k'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_full_spatial_64_100k',
+        'filename': 'checkpoint.pt',
+        'name': 'spatial_64_100k'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_full_spatial_128_100k',
+        'filename': 'checkpoint.pt',
+        'name': 'spatial_128_100k'
     }
-    # Additional checkpoints can be added here in the future
 ]
 
 # Define sparsity levels
@@ -150,44 +174,15 @@ def estimate_loss(model, fixed_batches):
     
     return losses.mean().item()
 
-# Find checkpoint files in the Hugging Face repository
+# Find checkpoint files and download from Hugging Face
 def find_checkpoints():
-    """Find and download checkpoint files from the Hugging Face repository."""
+    """Find and download checkpoint files from the Hugging Face repositories."""
     checkpoints = []
     
     try:
-        # First, get spatial checkpoints from default repo
-        print(f"Finding 'spatial' checkpoints in {DEFAULT_REPO_ID}...")
-        all_files = list_repo_files(DEFAULT_REPO_ID)
+        print(f"Loading {len(CHECKPOINTS)} checkpoints for evaluation...")
         
-        # Filter for spatial checkpoint files in the root directory
-        for file_path in all_files:
-            # Check if file is in root directory (no '/' in the path except potentially at the beginning)
-            if '/' not in file_path.strip('/') and file_path.endswith('.pt'):
-                # Check if filename starts with spatial
-                filename = os.path.basename(file_path)
-                if filename.startswith('spatial'):
-                    # fixed isn't a prefix so it's just easier to write a hack
-                    if not 'fixedckpt' in filename:
-                        continue
-                    # Okay this is weird but we have dup checkpoints, and this is a hacky but workable way to dedup the way we want
-                    if '3057' not in filename and '30638' not in filename:
-                        continue
-                    
-                    try:
-                        local_file = hf_hub_download(repo_id=DEFAULT_REPO_ID, filename=file_path)
-                        model_name = os.path.splitext(os.path.basename(file_path))[0]
-                        checkpoints.append({
-                            'name': model_name,
-                            'checkpoint_path': local_file,
-                        })
-                    except Exception as e:
-                        print(f"Error processing {file_path}: {str(e)}")
-                        continue
-        
-        # Now add hardcoded comparison checkpoints
-        print(f"Adding {len(COMPARISON_CHECKPOINTS)} hardcoded comparison checkpoints...")
-        for ckpt in COMPARISON_CHECKPOINTS:
+        for ckpt in CHECKPOINTS:
             try:
                 local_file = hf_hub_download(repo_id=ckpt['repo_id'], filename=ckpt['filename'])
                 checkpoints.append({
@@ -438,7 +433,7 @@ def main():
     if not combined_results.empty:
         print(f"Loaded existing results for {combined_results['model_name'].nunique()} models")
     
-    # Find all checkpoints in the HF repository
+    # Find all checkpoints from the predefined list
     print("Finding checkpoints...")
     checkpoints = find_checkpoints()
     
