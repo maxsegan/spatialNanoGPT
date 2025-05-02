@@ -43,8 +43,12 @@ def create_pareto_front_visualization(df, output_dir):
         # Add group column based on model name patterns
         df['group'] = 'Other'
         
-        # Set Spatial group for spatial models
-        spatial_mask = df['model_name'].str.contains('spatial', case=False)
+        # Set Spatial_D group for d_spatial models
+        spatial_d_mask = df['model_name'].str.contains('d_spatial', case=False)
+        df.loc[spatial_d_mask, 'group'] = 'Spatial_D'
+        
+        # Set Spatial group for spatial models (not d_spatial)
+        spatial_mask = df['model_name'].str.contains('spatial', case=False) & ~spatial_d_mask
         df.loc[spatial_mask, 'group'] = 'Spatial'
         
         # Set L1 group for l1 models
@@ -54,8 +58,12 @@ def create_pareto_front_visualization(df, output_dir):
     # Fill NaN groups with appropriate values based on model name
     if df['group'].isna().any():
         print("Fixing NaN values in group column based on model names...")
-        # For models with NaN group but 'spatial' in the name
-        spatial_mask = df['model_name'].str.contains('spatial', case=False) & df['group'].isna()
+        # For models with NaN group but 'd_spatial' in the name
+        spatial_d_mask = df['model_name'].str.contains('d_spatial', case=False) & df['group'].isna()
+        df.loc[spatial_d_mask, 'group'] = 'Spatial_D'
+        
+        # For models with NaN group but 'spatial' in the name (excluding d_spatial)
+        spatial_mask = df['model_name'].str.contains('spatial', case=False) & ~spatial_d_mask & df['group'].isna()
         df.loc[spatial_mask, 'group'] = 'Spatial'
         
         # For models with NaN group but 'l1' in the name
@@ -80,8 +88,8 @@ def create_pareto_front_visualization(df, output_dir):
     groups = df['group'].unique()
     
     # Define markers and colors for each group
-    markers = {'L1': 's', 'Spatial': 'v', 'L1Only': '^', 'Other': 'o'}
-    colors = {'L1': 'red', 'Spatial': 'green', 'L1Only': 'blue', 'Other': 'purple'}
+    markers = {'L1': 's', 'Spatial': 'v', 'Spatial_D': 'p', 'L1Only': '^', 'Other': 'o'}
+    colors = {'L1': 'red', 'Spatial': 'green', 'Spatial_D': 'blue', 'L1Only': 'purple', 'Other': 'gray'}
     
     # For each group, find the best model at each sparsity level
     for group in groups:

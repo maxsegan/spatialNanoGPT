@@ -76,19 +76,25 @@ CHECKPOINTS = [
         'repo_id': 'maxsegan/gpt2_full_spatial_128_100k',
         'filename': 'pytorch_model.bin',
         'name': 'gpt2_full_spatial_128_100k',
-        'group': 'L1'
+        'group': 'Spatial'
     },
     {
         'repo_id': 'maxsegan/gpt2_full_spatial_64_100k',
         'filename': 'pytorch_model.bin',
         'name': 'gpt2_full_spatial_64_100k',
-        'group': 'L1'
+        'group': 'Spatial'
     },
     {
         'repo_id': 'maxsegan/gpt2_full_spatial_16_100k',
         'filename': 'pytorch_model.bin',
         'name': 'gpt2_full_spatial_16_100k',
-        'group': 'L1'
+        'group': 'Spatial'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_d_spatial_128_0.1_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_d_spatial_128_0.1_100k',
+        'group': 'Spatial_D'
     }
 ]
 

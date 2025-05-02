@@ -53,8 +53,12 @@ def main():
     # Fix group assignments based on model name patterns
     print("\nAssigning groups based on model name patterns...")
     
-    # Assign Spatial group to models with 'spatial' in the name
-    spatial_mask = df['model_name'].str.contains('spatial', case=False)
+    # Assign Spatial_D group to models with 'd_spatial' in the name
+    spatial_d_mask = df['model_name'].str.contains('d_spatial', case=False)
+    df.loc[spatial_d_mask, 'group'] = 'Spatial_D'
+    
+    # Assign Spatial group to models with 'spatial' in the name, but not already assigned to Spatial_D
+    spatial_mask = df['model_name'].str.contains('spatial', case=False) & ~spatial_d_mask
     df.loc[spatial_mask, 'group'] = 'Spatial'
     
     # Assign L1 group to models with 'l1' in the name
@@ -62,7 +66,7 @@ def main():
     df.loc[l1_mask, 'group'] = 'L1'
     
     # For all other models, set group to 'Other' if not already assigned
-    other_mask = ~(spatial_mask | l1_mask)
+    other_mask = ~(spatial_mask | l1_mask | spatial_d_mask)
     df.loc[other_mask & df['group'].isna(), 'group'] = 'Other'
     
     # Count changes
