@@ -1,0 +1,122 @@
+{
+  "balanced": {
+    "model_name": "gpt2_full_spatial_64_100k",
+    "sparsity": 0.5000000235475139,
+    "val_loss": 2.998645067214966,
+    "relative_drop": 0.004536184608297189,
+    "group": "Spatial"
+  },
+  "best_performance": {
+    "model_name": "gpt2_full_spatial_16_100k",
+    "sparsity": 0.0,
+    "val_loss": 2.9257922172546387,
+    "relative_drop": 0.0,
+    "group": "Spatial"
+  },
+  "highest_sparsity": {
+    "model_name": "maxsegan_gpt2_l1_64_100k",
+    "sparsity": 0.8500000164832597,
+    "val_loss": 3.618476390838623,
+    "relative_drop": 0.17626283450311253,
+    "group": "L1"
+  },
+  "by_group": {
+    "L1": {
+      "50%": {
+        "model_name": "maxsegan_gpt2_l1_16_100k",
+        "sparsity": 0.500000011773757,
+        "val_loss": 2.965419292449951,
+        "relative_drop": 0.005595024912547153
+      },
+      "70%": {
+        "model_name": "maxsegan_gpt2_l1_64_100k",
+        "sparsity": 0.7000000329665196,
+        "val_loss": 3.0910658836364746,
+        "relative_drop": 0.004816813819101817
+      },
+      "80%": {
+        "model_name": "maxsegan_gpt2_l1_64_100k",
+        "sparsity": 0.8000000023547514,
+        "val_loss": 3.246791362762451,
+        "relative_drop": 0.05543869819696923
+      },
+      "85%": {
+        "model_name": "maxsegan_gpt2_l1_64_100k",
+        "sparsity": 0.8000000023547514,
+        "val_loss": 3.246791362762451,
+        "relative_drop": 0.05543869819696923
+      },
+      "90%": {
+        "model_name": "maxsegan_gpt2_l1_64_100k",
+        "sparsity": 0.8500000164832597,
+        "val_loss": 3.618476390838623,
+        "relative_drop": 0.17626283450311253
+      }
+    },
+    "Spatial": {
+      "50%": {
+        "model_name": "gpt2_full_spatial_64_100k",
+        "sparsity": 0.5000000235475139,
+        "val_loss": 2.998645067214966,
+        "relative_drop": 0.004536184608297189
+      },
+      "70%": {
+        "model_name": "gpt2_full_spatial_128_100k",
+        "sparsity": 0.7000000094190056,
+        "val_loss": 3.17537522315979,
+        "relative_drop": 0.04590217412131903
+      }
+    },
+    "Spatial_D": {
+      "50%": {
+        "model_name": "gpt2_d_spatial_128_0.1_100k",
+        "sparsity": 0.500000011773757,
+        "val_loss": 3.0209405422210693,
+        "relative_drop": 0.0039088348938565165
+      },
+      "70%": {
+        "model_name": "gpt2_d_spatial_128_0.1_100k",
+        "sparsity": 0.7000000094190056,
+        "val_loss": 3.651431798934937,
+        "relative_drop": 0.213431575938279
+      }
+    }
+  },
+  "sparsity_targets": {
+    "50%": {
+      "model_name": "maxsegan_gpt2_l1_16_100k",
+      "sparsity": 0.500000011773757,
+      "val_loss": 2.965419292449951,
+      "relative_drop": 0.005595024912547153,
+      "group": "L1"
+    },
+    "70%": {
+      "model_name": "maxsegan_gpt2_l1_64_100k",
+      "sparsity": 0.7000000329665196,
+      "val_loss": 3.0910658836364746,
+      "relative_drop": 0.004816813819101817,
+      "group": "L1"
+    },
+    "80%": {
+      "model_name": "maxsegan_gpt2_l1_64_100k",
+      "sparsity": 0.8000000023547514,
+      "val_loss": 3.246791362762451,
+      "relative_drop": 0.05543869819696923,
+      "group": "L1"
+    },
+    "85%": {
+      "model_name": "maxsegan_gpt2_l1_64_100k",
+      "sparsity": 0.8000000023547514,
+      "val_loss": 3.246791362762451,
+      "relative_drop": 0.05543869819696923,
+      "group": "L1"
+    },
+    "90%": {
+      "model_name": "maxsegan_gpt2_l1_64_100k",
+      "sparsity": 0.8500000164832597,
+      "val_loss": 3.618476390838623,
+      "relative_drop": 0.17626283450311253,
+      "group": "L1"
+    }
+  }
+}
