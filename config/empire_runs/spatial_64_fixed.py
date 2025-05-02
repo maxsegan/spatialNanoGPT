@@ -18,6 +18,7 @@ log_interval = 10
 weight_decay = 0
 # regularization
 spatial_cost_scale = 64
+spatial_d_value = 0.1
 spatial_mode = "fixed"
 optimize_interval = 500
 l1_scale = 0.0

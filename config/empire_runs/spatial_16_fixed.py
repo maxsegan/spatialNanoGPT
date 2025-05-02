@@ -20,4 +20,5 @@ weight_decay = 0
 spatial_cost_scale = 16
 spatial_mode = "fixed"
 optimize_interval = 500
+spatial_d_value = 0.1
 l1_scale = 0.0
