@@ -11,5 +11,6 @@ __pycache__/
 input.txt
 env/
 venv/
+wandb/
 /regularization_experiments
 /regularization_pareto
