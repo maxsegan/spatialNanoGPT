@@ -90,7 +90,6 @@ CHECKPOINTS = [
         'name': 'gpt2_full_spatial_16_100k',
         'group': 'Spatial'
     },
-    # Adding the new model with Combo group
     {
         'repo_id': 'maxsegan/gpt2_combo_l1_16_spatial_64_100k',
         'filename': 'pytorch_model.bin',
