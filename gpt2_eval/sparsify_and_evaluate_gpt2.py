@@ -90,11 +90,12 @@ CHECKPOINTS = [
         'name': 'gpt2_full_spatial_16_100k',
         'group': 'Spatial'
     },
+    # Adding the new model with Combo group
     {
-        'repo_id': 'maxsegan/gpt2_d_spatial_128_0.1_100k',
+        'repo_id': 'maxsegan/gpt2_combo_l1_16_spatial_64_100k',
         'filename': 'pytorch_model.bin',
-        'name': 'gpt2_d_spatial_128_0.1_100k',
-        'group': 'Spatial_D'
+        'name': 'gpt2_combo_l1_16_spatial_64_100k',
+        'group': 'Combo'
     }
 ]
 
@@ -515,18 +516,28 @@ def load_model_from_checkpoint(checkpoint_path, device=args.device):
                 
                 # For HF models, we don't have regularization info, use defaults
                 l1_scale = 0.0
-                if 'l1_' in os.path.basename(checkpoint_path) or any('l1_' in ckpt['repo_id'] for ckpt in CHECKPOINTS if ckpt['filename'] == os.path.basename(checkpoint_path)):
-                    # Extract L1 scale from the repo name if possible
-                    for ckpt in CHECKPOINTS:
-                        if ckpt['filename'] == os.path.basename(checkpoint_path):
-                            repo_parts = ckpt['repo_id'].split('/')[-1].split('_')
-                            for i, part in enumerate(repo_parts):
-                                if part == 'l1' and i + 1 < len(repo_parts) and repo_parts[i+1].isdigit():
-                                    l1_scale = int(repo_parts[i+1]) / 100.0  # Assuming format like l1_32 means 0.32
-                                    print(f"Extracted l1_scale={l1_scale} from repo name")
-                                    break
+                spatial_cost_scale = 0.0
                 
-                return model, {'l1_scale': l1_scale, 'weight_decay': 0.0, 'spatial_cost_scale': 0.0}
+                # Extract regularization info from the repo name if possible
+                for ckpt in CHECKPOINTS:
+                    if ckpt['filename'] == os.path.basename(checkpoint_path):
+                        repo_parts = ckpt['repo_id'].split('/')[-1].split('_')
+                        
+                        # Check for l1 scale
+                        for i, part in enumerate(repo_parts):
+                            if part == 'l1' and i + 1 < len(repo_parts) and repo_parts[i+1].isdigit():
+                                l1_scale = int(repo_parts[i+1]) / 100.0
+                                print(f"Extracted l1_scale={l1_scale} from repo name")
+                        
+                        # Check for spatial cost scale
+                        for i, part in enumerate(repo_parts):
+                            if part == 'spatial' and i + 1 < len(repo_parts) and repo_parts[i+1].isdigit():
+                                spatial_cost_scale = int(repo_parts[i+1]) / 100.0
+                                print(f"Extracted spatial_cost_scale={spatial_cost_scale} from repo name")
+                        
+                        break
+                
+                return model, {'l1_scale': l1_scale, 'weight_decay': 0.0, 'spatial_cost_scale': spatial_cost_scale}
                 
             except Exception as e:
                 print(f"Error adapting HuggingFace model: {str(e)}")
@@ -692,7 +703,7 @@ def main():
                     'l1_scale': l1_scale,
                     'weight_decay': weight_decay,
                     'spatial_cost_scale': spatial_cost_scale,
-                    'group': next((ckpt.get('group', 'Other') for ckpt in checkpoints if ckpt['name'] == model_name), 'Other')
+                    'group': ckpt_info['group']  # Use the explicit group from CHECKPOINTS
                 }
                 model_results.append(result)
                 

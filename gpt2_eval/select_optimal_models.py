@@ -120,12 +120,6 @@ def create_group_pareto_visualization(df, output_dir):
         print("No 'group' column found in the data. Skipping group visualization.")
         return
     
-    # Check for Spatial_D models and add group if needed
-    spatial_d_mask = df['model_name'].str.contains('d_spatial', case=False)
-    if spatial_d_mask.any() and 'Spatial_D' not in df['group'].unique():
-        print("Found d_spatial models, assigning to Spatial_D group...")
-        df.loc[spatial_d_mask, 'group'] = 'Spatial_D'
-    
     # Create a plot to show performance by group
     plt.figure(figsize=(16, 10))
     
@@ -137,8 +131,8 @@ def create_group_pareto_visualization(df, output_dir):
     groups = df['group'].unique()
     
     # Define consistent markers and colors for groups
-    markers = {'L1': 's', 'Spatial': 'v', 'Spatial_D': 'p', 'L1Only': '^', 'Other': 'o'}
-    colors = {'L1': 'red', 'Spatial': 'green', 'Spatial_D': 'blue', 'L1Only': 'purple', 'Other': 'gray'}
+    markers = {'L1': 's', 'Spatial': 'v', 'Combo': 'D', 'L1Only': '^', 'Other': 'o'}
+    colors = {'L1': 'red', 'Spatial': 'green', 'Combo': 'blue', 'L1Only': 'purple', 'Other': 'gray'}
     
     # For each group, find the best model at each sparsity level
     for group in groups:
@@ -198,12 +192,6 @@ def select_optimal_models(df, min_sparsity=args.min_sparsity, max_drop=args.max_
     """
     if df is None or df.empty:
         return None
-    
-    # Check for Spatial_D models and add group if needed
-    spatial_d_mask = df['model_name'].str.contains('d_spatial', case=False)
-    if spatial_d_mask.any() and 'Spatial_D' not in df['group'].unique():
-        print("Found d_spatial models, assigning to Spatial_D group...")
-        df.loc[spatial_d_mask, 'group'] = 'Spatial_D'
     
     # Normalize performance relative to baseline
     normalized_df = normalize_model_performance(df)
@@ -317,108 +305,3 @@ def select_optimal_models(df, min_sparsity=args.min_sparsity, max_drop=args.max_
             }
     
     return recommendations, pareto_models
-
-def main():
-    # Load results
-    print(f"Loading results from {args.results_dir}...")
-    results = load_results(args.results_dir)
-    
-    if results is None or results.empty:
-        print("No results found to analyze.")
-        return
-    
-    print(f"Found data for {results['model_name'].nunique()} models.")
-    
-    # Check if the new spatial_d model is in the results
-    spatial_d_models = results[results['model_name'].str.contains('d_spatial', case=False)]
-    if not spatial_d_models.empty:
-        print(f"\nFound {len(spatial_d_models['model_name'].unique())} Spatial_D models:")
-        for model in spatial_d_models['model_name'].unique():
-            print(f"  - {model}")
-        
-        # Ensure they have the correct group
-        if 'group' in results.columns:
-            spatial_d_mask = results['model_name'].str.contains('d_spatial', case=False)
-            results.loc[spatial_d_mask, 'group'] = 'Spatial_D'
-            print("Assigned Spatial_D group to all d_spatial models")
-    
-    # Create group-based visualization
-    print("Creating group-based Pareto front visualization...")
-    create_group_pareto_visualization(results, args.results_dir)
-    
-    # Select optimal models
-    print(f"Selecting optimal models (min sparsity: {args.min_sparsity*100:.0f}%, "
-          f"max performance drop: {args.max_performance_drop*100:.0f}%)...")
-    
-    selection_result = select_optimal_models(results)
-    
-    if selection_result is None:
-        print("No suitable models found with the given criteria.")
-        return
-    
-    recommendations, pareto_models = selection_result
-    
-    # Output recommendations
-    print("\nModel Recommendations:")
-    print("=====================")
-    
-    # Most balanced model
-    if 'balanced' in recommendations:
-        balanced = recommendations['balanced']
-        print(f"\nMost Balanced Model: {balanced['model_name']}")
-        print(f"  Sparsity: {balanced['sparsity']*100:.1f}%")
-        print(f"  Loss: {balanced['val_loss']:.4f}")
-        print(f"  Performance Drop: {balanced['relative_drop']*100:.1f}%")
-        if 'group' in balanced:
-            print(f"  Group: {balanced['group']}")
-    
-    # Best performance model
-    if 'best_performance' in recommendations:
-        best_perf = recommendations['best_performance']
-        print(f"\nBest Performance Model: {best_perf['model_name']}")
-        print(f"  Sparsity: {best_perf['sparsity']*100:.1f}%")
-        print(f"  Loss: {best_perf['val_loss']:.4f}")
-        print(f"  Performance Drop: {best_perf['relative_drop']*100:.1f}%")
-        if 'group' in best_perf:
-            print(f"  Group: {best_perf['group']}")
-    
-    # Highest sparsity model
-    if 'highest_sparsity' in recommendations:
-        highest_spar = recommendations['highest_sparsity']
-        print(f"\nHighest Sparsity Model: {highest_spar['model_name']}")
-        print(f"  Sparsity: {highest_spar['sparsity']*100:.1f}%")
-        print(f"  Loss: {highest_spar['val_loss']:.4f}")
-        print(f"  Performance Drop: {highest_spar['relative_drop']*100:.1f}%")
-        if 'group' in highest_spar:
-            print(f"  Group: {highest_spar['group']}")
-    
-    # Best models by group
-    if 'by_group' in recommendations and recommendations['by_group']:
-        print("\nBest Models by Group and Sparsity Level:")
-        for group, sparsity_models in recommendations['by_group'].items():
-            print(f"\n  Group: {group}")
-            for sparsity, model in sparsity_models.items():
-                print(f"    {sparsity} Sparsity: {model['model_name']}")
-                print(f"      Actual Sparsity: {model['sparsity']*100:.1f}%")
-                print(f"      Loss: {model['val_loss']:.4f}")
-                print(f"      Performance Drop: {model['relative_drop']*100:.1f}%")
-    
-    # Models at specific sparsity targets
-    if 'sparsity_targets' in recommendations and recommendations['sparsity_targets']:
-        print("\nBest Models at Specific Sparsity Levels:")
-        for target, model in recommendations['sparsity_targets'].items():
-            print(f"  {target} Sparsity: {model['model_name']}")
-            print(f"    Actual Sparsity: {model['sparsity']*100:.1f}%")
-            print(f"    Loss: {model['val_loss']:.4f}")
-            print(f"    Performance Drop: {model['relative_drop']*100:.1f}%")
-            if 'group' in model:
-                print(f"    Group: {model['group']}")
-    
-    # Save recommendations to JSON
-    with open(args.output_file, 'w') as f:
-        json.dump(recommendations, f, indent=2)
-    
-    print(f"\nRecommendations saved to {args.output_file}")
-
-if __name__ == '__main__':
-    main()

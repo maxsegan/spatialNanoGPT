@@ -78,18 +78,8 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Step 2: Fix group assignments in the combined results
-echo "Step 2: Fixing group assignments in results..."
-python fix_group_assignments.py --results_dir "gpt2_sparsity_results"
-
-# Check if the previous step succeeded
-if [ $? -ne 0 ]; then
-    echo "Error in group assignment fix step. Exiting."
-    exit 1
-fi
-
-# Step 3: Create specialized Pareto front visualization
-echo "Step 3: Creating specialized Pareto front visualization..."
+# Step 2: Create specialized Pareto front visualization
+echo "Step 2: Creating specialized Pareto front visualization..."
 PARETO_ARGS=(
     "--results_dir" "gpt2_sparsity_results"
     "--output_dir" "sparsity_analysis"
@@ -103,8 +93,8 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Step 4: Select optimal models
-echo "Step 4: Selecting optimal models..."
+# Step 3: Select optimal models
+echo "Step 3: Selecting optimal models..."
 SELECTION_ARGS=(
     "--results_dir" "gpt2_sparsity_results"
     "--output_file" "sparsity_analysis/optimal_models.json"
