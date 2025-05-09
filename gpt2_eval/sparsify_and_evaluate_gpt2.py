@@ -95,6 +95,24 @@ CHECKPOINTS = [
         'filename': 'pytorch_model.bin',
         'name': 'gpt2_combo_l1_16_spatial_64_100k',
         'group': 'Combo'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_combo_l1_32_spatial_64_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_combo_l1_32_spatial_64_100k',
+        'group': 'Combo'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_combo_l1_32_spatial_32_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_combo_l1_32_spatial_32_100k',
+        'group': 'Combo'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_combo_l1_32_spatial_16_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_combo_l1_32_spatial_16_100k',
+        'group': 'Combo'
     }
 ]
 
