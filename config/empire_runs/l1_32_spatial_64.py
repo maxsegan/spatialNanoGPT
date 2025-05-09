@@ -21,4 +21,4 @@ spatial_cost_scale = 64
 spatial_mode = "fixed"
 optimize_interval = 500
 spatial_d_value = 0.0
-l1_scale = 16
+l1_scale = 32
