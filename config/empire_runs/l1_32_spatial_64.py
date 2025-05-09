@@ -1,7 +1,7 @@
 # config for training GPT-2 (124M) with spatial regularization
 wandb_log = True
 wandb_project = 'spatial-gpt2'
-wandb_run_name = 'l1_16_spatial_64'
+wandb_run_name = 'l1_32_spatial_64'
 # these make the total batch size be ~0.5M
 # 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
 batch_size = 12
