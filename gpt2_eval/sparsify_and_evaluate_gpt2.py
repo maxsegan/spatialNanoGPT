@@ -93,25 +93,43 @@ CHECKPOINTS = [
     {
         'repo_id': 'maxsegan/gpt2_combo_l1_16_spatial_64_100k',
         'filename': 'pytorch_model.bin',
-        'name': 'gpt2_combo_l1_16_spatial_64_100k',
+        'name': 'gpt2_l1_16_spatial_64_100k',
         'group': 'Combo'
     },
     {
-        'repo_id': 'maxsegan/gpt2_combo_l1_32_spatial_64_100k',
+        'repo_id': 'maxsegan/gpt2_l1_64_spatial_16_100k',
         'filename': 'pytorch_model.bin',
-        'name': 'gpt2_combo_l1_32_spatial_64_100k',
+        'name': 'gpt2_l1_64_spatial_16_100k',
         'group': 'Combo'
     },
     {
-        'repo_id': 'maxsegan/gpt2_combo_l1_32_spatial_32_100k',
+        'repo_id': 'maxsegan/gpt2_l1_16_spatial_32_100k',
         'filename': 'pytorch_model.bin',
-        'name': 'gpt2_combo_l1_32_spatial_32_100k',
+        'name': 'gpt2_l1_16_spatial_32_100k',
         'group': 'Combo'
     },
     {
-        'repo_id': 'maxsegan/gpt2_combo_l1_32_spatial_16_100k',
+        'repo_id': 'maxsegan/gpt2_l1_16_spatial_16_100k',
         'filename': 'pytorch_model.bin',
-        'name': 'gpt2_combo_l1_32_spatial_16_100k',
+        'name': 'gpt2_l1_16_spatial_16_100k',
+        'group': 'Combo'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_l1_32_spatial_16_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_l1_32_spatial_16_100k',
+        'group': 'Combo'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_l1_32_spatial_64_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_l1_32_spatial_16_100k',
+        'group': 'Combo'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_l1_32_spatial_32_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_l1_32_spatial_32_100k',
         'group': 'Combo'
     }
 ]
