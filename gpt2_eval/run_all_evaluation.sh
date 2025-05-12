@@ -5,7 +5,6 @@
 # Set default parameters
 BATCH_SIZE=4
 BLOCK_SIZE=1024
-EVAL_SUBSET=200
 MIN_SPARSITY=0.0
 MAX_PERF_DROP=0.5
 FORCE_EVAL=false
@@ -59,7 +58,6 @@ echo "Step 1: Running model sparsification and evaluation..."
 SPARSIFY_ARGS=(
     "--batch_size" "$BATCH_SIZE"
     "--block_size" "$BLOCK_SIZE"
-    "--eval_subset_size" "$EVAL_SUBSET"
     "--results_dir" "gpt2_sparsity_results"
 )
 

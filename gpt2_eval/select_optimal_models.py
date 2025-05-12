@@ -124,7 +124,7 @@ def create_group_pareto_visualization(df, output_dir):
     plt.figure(figsize=(16, 10))
     
     # Convert sparsity to percentage points for x-axis
-    sparsity_ticks = [0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
+    sparsity_ticks = [0.0, 0.25, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
     sparsity_labels = [f"{s*100:.0f}%" for s in sparsity_ticks]
     
     # Get the unique groups
@@ -257,7 +257,7 @@ def select_optimal_models(df, min_sparsity=args.min_sparsity, max_drop=args.max_
     if 'group' in acceptable_models.columns:
         recommendations['by_group'] = {}
         
-        sparsity_targets = [0.5, 0.7, 0.8, 0.85, 0.9]
+        sparsity_targets = [0.25, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
         groups = acceptable_models['group'].unique()
         
         for group in groups:
@@ -285,7 +285,7 @@ def select_optimal_models(df, min_sparsity=args.min_sparsity, max_drop=args.max_
     # Best models at specific sparsity levels (regardless of group)
     recommendations['sparsity_targets'] = {}
     
-    sparsity_targets = [0.5, 0.7, 0.8, 0.85, 0.9]
+    sparsity_targets = [0.0, 0.25, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9]
     for target in sparsity_targets:
         # Find models close to this sparsity level
         tolerance = 0.05

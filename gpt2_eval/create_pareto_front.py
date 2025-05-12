@@ -51,7 +51,7 @@ def create_pareto_front_visualization(df, output_dir):
     plt.figure(figsize=(16, 10))
     
     # Define fixed sparsity levels we want to show
-    sparsity_levels = [0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
+    sparsity_levels = [0.0, 0.25, 0.5, 0.6, 0.7, 0.8]
     
     # Get unique groups
     groups = df['group'].unique()
@@ -93,7 +93,7 @@ def create_pareto_front_visualization(df, output_dir):
         if len(x_values) < 2:
             print(f"Not enough data points for group: {group} (only {len(x_values)} points found)")
             continue
-            
+
         # Plot this group's Pareto front
         plt.plot(
             x_values, 
@@ -110,6 +110,7 @@ def create_pareto_front_visualization(df, output_dir):
     plt.ylabel('Validation Loss', fontsize=14)
     plt.title('Regularization Performance by Group and Sparsity', fontsize=18)
     plt.grid(True, linestyle='--', alpha=0.7)
+    plt.yscale("log")
     
     # Set the x-axis ticks to show percentages
     plt.xticks(sparsity_levels, [f"{s*100:.0f}%" for s in sparsity_levels])

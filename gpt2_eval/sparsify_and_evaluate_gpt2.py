@@ -16,10 +16,13 @@ import argparse
 import matplotlib.pyplot as plt
 from huggingface_hub import hf_hub_download
 import sys
+import random
 
 # Hack city import to find the model module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model import GPT, GPTConfig
+
+random.seed(1776)
 
 # Configure argument parser
 parser = argparse.ArgumentParser(description="Sparsify and evaluate GPT2 models from Hugging Face")
@@ -33,12 +36,10 @@ parser.add_argument('--results_dir', type=str, default='gpt2_sparsity_results',
                     help='Directory to save results')
 parser.add_argument('--force_reevaluate', action='store_true',
                     help='Force re-evaluation of all models, even if results exist')
-parser.add_argument('--eval_iters', type=int, default=200,
+parser.add_argument('--eval_iters', type=int, default=1000,
                     help='Number of iterations for evaluation')
 parser.add_argument('--data_dir', type=str, default='../data/openwebtext',
                     help='Directory with dataset')
-parser.add_argument('--eval_subset_size', type=int, default=200,
-                    help='Number of examples to use for evaluation')
 args = parser.parse_args()
 
 args.data_dir = os.path.normpath(args.data_dir)
@@ -82,6 +83,12 @@ CHECKPOINTS = [
         'repo_id': 'maxsegan/gpt2_full_spatial_64_100k',
         'filename': 'pytorch_model.bin',
         'name': 'gpt2_full_spatial_64_100k',
+        'group': 'Spatial'
+    },
+    {
+        'repo_id': 'maxsegan/gpt2_d_spatial_64_0.1_100k',
+        'filename': 'pytorch_model.bin',
+        'name': 'gpt2_d_spatial_64_0.1_100k',
         'group': 'Spatial'
     },
     {
@@ -775,6 +782,7 @@ def main():
                 plt.plot(model_df['actual_sparsity'], model_df['val_loss'], 'o-', color='blue')
                 plt.xlabel('Sparsity')
                 plt.ylabel('Validation Loss')
+                plt.yscale("log")
                 plt.title(f'Sparsity vs. Loss for {model_name}')
                 
                 # Add grid and title
@@ -804,6 +812,7 @@ def main():
             plt.title('Sparsity vs. Loss for All Models')
             plt.grid(True, alpha=0.3)
             plt.legend(loc='best', fontsize='small')
+            plt.yscale("log")
             plt_path = os.path.join(args.results_dir, "all_models_loss_comparison.png")
             plt.savefig(plt_path)
             plt.close()
@@ -835,6 +844,7 @@ def main():
                 plt.xlabel('Sparsity')
                 plt.ylabel('Validation Loss')
                 plt.title('Sparsity vs. Loss by Model Groups')
+                plt.yscale("log")
                 plt.grid(True, alpha=0.3)
                 plt.legend(loc='best', fontsize='small')
                 plt_path = os.path.join(args.results_dir, "model_groups_pareto_front.png")
